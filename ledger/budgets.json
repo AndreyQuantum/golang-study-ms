@@ -1,0 +1,4 @@
+[
+  {"category": "food", "limit": 5000},
+  {"category": "transport", "limit": 3000}
+]
