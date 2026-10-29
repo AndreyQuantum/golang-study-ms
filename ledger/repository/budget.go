@@ -19,8 +19,13 @@ func NewBudgetRepository() *BudgetRepository {
 		budgets: map[string]entity.Budget{},
 	}
 }
-func (r *BudgetRepository) SetBudget(b entity.Budget) {
+
+func (r *BudgetRepository) SetBudget(b entity.Budget) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
 	r.budgets[b.Category] = b
+	return nil
 }
 
 func (r *BudgetRepository) GetBudget(category string) (entity.Budget, bool) {
@@ -46,16 +51,13 @@ func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
 	}
 
 	for i, b := range budgets {
-		if b.Category == "" {
-			return fmt.Errorf("budget #%d: empty category", i)
-		}
-		if b.Limit < 0 {
-			return fmt.Errorf("budget #%d (%q): negative limit %.2f", i, b.Category, b.Limit)
+		if err := b.Validate(); err != nil {
+			return fmt.Errorf("budget #%d: %w", i, err)
 		}
 	}
 
 	for _, b := range budgets {
-		r.SetBudget(b)
+		r.budgets[b.Category] = b
 	}
 	return nil
 }

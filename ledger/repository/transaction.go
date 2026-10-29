@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
 )
@@ -22,9 +23,12 @@ func NewTransactionRepository(budgets *BudgetRepository) *TransactionRepository 
 }
 
 func (r *TransactionRepository) AddTransaction(t entity.Transaction) error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	if b, ok := r.budgets.GetBudget(t.Category); ok {
 		spent := r.totalByCategory(t.Category)
-		if spent+t.Amount > b.Limit {
+		if toCents(spent+t.Amount) > toCents(b.Limit) {
 			return fmt.Errorf("%w: category %q, limit %.2f, spent %.2f, new %.2f",
 				ErrBudgetExceeded, t.Category, b.Limit, spent, t.Amount)
 		}
@@ -47,4 +51,8 @@ func (r *TransactionRepository) totalByCategory(category string) float64 {
 		}
 	}
 	return total
+}
+
+func toCents(x float64) int64 {
+	return int64(math.Round(x * 100))
 }
