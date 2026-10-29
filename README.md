@@ -4,7 +4,7 @@
 
 | Сервис    | Описание                                                      |
 |-----------|---------------------------------------------------------------|
-| `gateway` | HTTP-шлюз. Пока умеет только отвечать на `GET /ping`.         |
+| `gateway` | HTTP-шлюз (chi): REST API для транзакций и бюджетов поверх `ledger`. |
 | `ledger`  | Учёт транзакций и бюджетов по категориям (консольная демо-программа). |
 
 Каждый сервис — отдельный Go-модуль, поэтому все команды ниже выполняются из папки сервиса.
@@ -20,14 +20,54 @@ cd gateway
 go run .
 ```
 
-Сервис слушает порт `8080`. Проверка из другого терминала:
+Сервис слушает порт `8080` и останавливается по `Ctrl+C` (graceful shutdown по SIGINT/SIGTERM). Данные хранятся в памяти
+пакета `ledger` (фасад `github.com/AndreyQuantum/golang-study-ms/ledger`, подключён через `replace` в `gateway/go.mod`)
+и пропадают при перезапуске. Все ответы — JSON с `Content-Type: application/json; charset=utf-8`; каждый запрос
+логируется (метод, путь, статус, длительность).
+
+### Эндпоинты
+
+| Метод  | Путь                 | Описание                          | Успех |
+|--------|----------------------|-----------------------------------|-------|
+| `GET`  | `/ping`              | Проверка живости: `{"message":"pong"}` | 200 |
+| `POST` | `/api/transactions`  | Добавить транзакцию               | 201   |
+| `GET`  | `/api/transactions`  | Список транзакций (пустой — `[]`) | 200   |
+| `POST` | `/api/budgets`       | Создать или обновить бюджет (upsert) | 201 |
+| `GET`  | `/api/budgets`       | Список бюджетов по категориям (пустой — `[]`) | 200 |
+
+Тело транзакции: `{"amount": 450, "category": "еда", "description": "ланч", "date": "2025-09-10"}`, дата в формате `YYYY-MM-DD`.
+Тело бюджета: `{"category": "еда", "limit": 5000}`. Неизвестные поля, пустое тело, лишние данные после объекта и тело больше 1 MiB отклоняются.
+
+### Коды ответов и ошибки
+
+| Код | Когда                                                                              |
+|-----|------------------------------------------------------------------------------------|
+| 201 | транзакция или бюджет сохранены                                                    |
+| 400 | некорректный JSON, неверный формат даты, ошибка валидации (`amount must be positive`, ...) |
+| 404 | неизвестный путь                                                                   |
+| 405 | метод не поддерживается для пути                                                   |
+| 409 | транзакция превышает бюджет категории: `{"error":"budget exceeded"}`               |
+| 500 | внутренняя ошибка: `{"error":"internal server error"}`                             |
+
+Все ошибки имеют вид `{"error":"текст"}`.
+
+### Примеры cURL
 
 ```sh
-curl http://localhost:8080/ping
-# pong
-```
+curl -X POST http://localhost:8080/api/budgets -H "Content-Type: application/json" -d '{"category":"еда","limit":500}'
 
-Остановить — `Ctrl+C`.
+curl -X POST http://localhost:8080/api/transactions -H "Content-Type: application/json" -d '{"amount":450,"category":"еда","description":"ланч","date":"2025-09-10"}'
+# 201 {"id":1,"amount":450,"category":"еда","description":"ланч","date":"2025-09-10"}
+
+curl -X POST http://localhost:8080/api/transactions -H "Content-Type: application/json" -d '{"amount":450,"category":"еда","description":"ужин","date":"2025-09-11"}'
+# 409 {"error":"budget exceeded"}
+
+curl -X POST http://localhost:8080/api/transactions -H "Content-Type: application/json" -d '{"amount":-1,"category":"еда","date":"2025-09-10"}'
+# 400 {"error":"amount must be positive"}
+
+curl http://localhost:8080/api/transactions
+curl http://localhost:8080/api/budgets
+```
 
 ## Ledger
 
@@ -35,7 +75,7 @@ curl http://localhost:8080/ping
 
 ```sh
 cd ledger
-go run .
+go run ./cmd/ledger
 ```
 
 > Запускать нужно именно из папки `ledger/`: программа открывает `budgets.json` по относительному пути.
@@ -82,6 +122,12 @@ Budget (лимит 0)            -> ошибка: limit must be positive
 
 Чтобы проверить обработку ошибок загрузки, можно испортить `budgets.json` (например, указать отрицательный
 `limit` или `0`, пустую `category` или опечатку в имени поля) и запустить снова — программа завершится с понятной ошибкой.
+
+### Фасад
+
+Корневой пакет `ledger` (`ledger/ledger.go`) — потокобезопасный фасад над репозиториями с хранилищем в памяти:
+`AddTransaction`, `ListTransactions`, `SetBudget`, `ListBudgets`, `CheckValid`, а также алиасы типов и `ErrBudgetExceeded`.
+Его импортирует `gateway`. Демо-программа лежит в `ledger/cmd/ledger` и работает через репозитории напрямую.
 
 ### Валидация
 

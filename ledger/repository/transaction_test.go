@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,10 +27,10 @@ func newRepoWithBudget(t *testing.T, category string, limit float64) (*Transacti
 func TestAddTransaction_WithinLimit(t *testing.T) {
 	repo, _ := newRepoWithBudget(t, "food", 5000)
 
-	if err := repo.AddTransaction(tx("food", 1000)); err != nil {
+	if _, err := repo.AddTransaction(tx("food", 1000)); err != nil {
 		t.Fatalf("AddTransaction: %v", err)
 	}
-	if err := repo.AddTransaction(tx("food", 4000)); err != nil {
+	if _, err := repo.AddTransaction(tx("food", 4000)); err != nil {
 		t.Fatalf("AddTransaction up to exact limit: %v", err)
 	}
 	if n := len(repo.ListTransactions()); n != 2 {
@@ -40,10 +41,10 @@ func TestAddTransaction_WithinLimit(t *testing.T) {
 func TestAddTransaction_FloatSumAtLimit(t *testing.T) {
 	repo, _ := newRepoWithBudget(t, "food", 0.3)
 
-	if err := repo.AddTransaction(tx("food", 0.1)); err != nil {
+	if _, err := repo.AddTransaction(tx("food", 0.1)); err != nil {
 		t.Fatalf("AddTransaction: %v", err)
 	}
-	if err := repo.AddTransaction(tx("food", 0.2)); err != nil {
+	if _, err := repo.AddTransaction(tx("food", 0.2)); err != nil {
 		t.Fatalf("0.1+0.2 must fit limit 0.3: %v", err)
 	}
 }
@@ -51,13 +52,13 @@ func TestAddTransaction_FloatSumAtLimit(t *testing.T) {
 func TestAddTransaction_ExceedsLimitIsNotSaved(t *testing.T) {
 	repo, _ := newRepoWithBudget(t, "food", 5000)
 
-	if err := repo.AddTransaction(tx("food", 4500)); err != nil {
+	if _, err := repo.AddTransaction(tx("food", 4500)); err != nil {
 		t.Fatalf("AddTransaction: %v", err)
 	}
 
 	over := tx("food", 600)
 	over.Description = "over"
-	err := repo.AddTransaction(over)
+	_, err := repo.AddTransaction(over)
 	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
@@ -76,7 +77,7 @@ func TestAddTransaction_ExceedsLimitIsNotSaved(t *testing.T) {
 func TestAddTransaction_NoBudgetForCategory(t *testing.T) {
 	repo, _ := newRepoWithBudget(t, "food", 100)
 
-	if err := repo.AddTransaction(tx("health", 1_000_000)); err != nil {
+	if _, err := repo.AddTransaction(tx("health", 1_000_000)); err != nil {
 		t.Fatalf("AddTransaction without budget: %v", err)
 	}
 }
@@ -85,14 +86,14 @@ func TestAddTransaction_AfterLimitIncrease(t *testing.T) {
 	repo, budgets := newRepoWithBudget(t, "food", 5000)
 	big := tx("food", 5500)
 
-	if err := repo.AddTransaction(big); !errors.Is(err, ErrBudgetExceeded) {
+	if _, err := repo.AddTransaction(big); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
 
 	if err := budgets.SetBudget(entity.Budget{Category: "food", Limit: 6000}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
-	if err := repo.AddTransaction(big); err != nil {
+	if _, err := repo.AddTransaction(big); err != nil {
 		t.Fatalf("AddTransaction after limit increase: %v", err)
 	}
 }
@@ -100,9 +101,9 @@ func TestAddTransaction_AfterLimitIncrease(t *testing.T) {
 func TestAddTransaction_AssignsSequentialIDs(t *testing.T) {
 	repo, _ := newRepoWithBudget(t, "food", 100)
 
-	_ = repo.AddTransaction(tx("other", 1))
-	_ = repo.AddTransaction(tx("food", 500))
-	_ = repo.AddTransaction(tx("other", 2))
+	_, _ = repo.AddTransaction(tx("other", 1))
+	_, _ = repo.AddTransaction(tx("food", 500))
+	_, _ = repo.AddTransaction(tx("other", 2))
 
 	txs := repo.ListTransactions()
 	if len(txs) != 2 {
@@ -130,7 +131,7 @@ func TestAddTransaction_InvalidIsNotSaved(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo, _ := newRepoWithBudget(t, "food", 5000)
-			err := repo.AddTransaction(tt.tx)
+			_, err := repo.AddTransaction(tt.tx)
 
 			var ve *entity.ValidationError
 			if !errors.As(err, &ve) {
@@ -143,5 +144,32 @@ func TestAddTransaction_InvalidIsNotSaved(t *testing.T) {
 				t.Fatalf("transactions = %d, want 0", n)
 			}
 		})
+	}
+}
+
+func TestAddTransaction_ReturnsSavedWithID(t *testing.T) {
+	repo, _ := newRepoWithBudget(t, "food", 100)
+
+	saved, err := repo.AddTransaction(tx("food", 10))
+	if err != nil || saved.ID != 1 {
+		t.Fatalf("saved = %+v, err = %v; want ID 1", saved, err)
+	}
+}
+
+func TestAddTransaction_ConcurrentRespectsLimit(t *testing.T) {
+	repo, _ := newRepoWithBudget(t, "food", 100)
+
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = repo.AddTransaction(tx("food", 1))
+		}()
+	}
+	wg.Wait()
+
+	if n := len(repo.ListTransactions()); n != 100 {
+		t.Fatalf("transactions = %d, want 100", n)
 	}
 }
