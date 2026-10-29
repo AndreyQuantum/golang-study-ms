@@ -88,3 +88,23 @@ func NewBudgetResponses(budgets []ledger.Budget) []BudgetResponse {
 	}
 	return result
 }
+
+type CategoryTotalResponse struct {
+	Category string  `json:"category"`
+	Total    float64 `json:"total"`
+}
+
+type ReportSummaryResponse struct {
+	From       string                  `json:"from"`
+	To         string                  `json:"to"`
+	Total      float64                 `json:"total"`
+	Categories []CategoryTotalResponse `json:"categories"`
+}
+
+func NewReportSummaryResponse(r ledger.ReportSummary) ReportSummaryResponse {
+	categories := make([]CategoryTotalResponse, 0, len(r.Categories))
+	for _, c := range r.Categories {
+		categories = append(categories, CategoryTotalResponse{Category: c.Category, Total: c.Total})
+	}
+	return ReportSummaryResponse{From: r.From, To: r.To, Total: r.Total, Categories: categories}
+}

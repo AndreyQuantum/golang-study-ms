@@ -47,6 +47,8 @@ func TestTransactionValidate(t *testing.T) {
 		{"negative amount", Transaction{Amount: -5, Category: "food", Date: testDate}, "amount", "amount must be positive"},
 		{"nan amount", Transaction{Amount: math.NaN(), Category: "food", Date: testDate}, "amount", "amount must be positive"},
 		{"inf amount", Transaction{Amount: math.Inf(1), Category: "food", Date: testDate}, "amount", "amount must be positive"},
+		{"amount below min", Transaction{Amount: 0.001, Category: "food", Date: testDate}, "amount", "amount must be between 0.01 and 999999999999.99"},
+		{"amount above max", Transaction{Amount: 1e13, Category: "food", Date: testDate}, "amount", "amount must be between 0.01 and 999999999999.99"},
 		{"empty category", Transaction{Amount: 10, Category: "", Date: testDate}, "category", "category must not be empty"},
 		{"blank category", Transaction{Amount: 10, Category: "   ", Date: testDate}, "category", "category must not be empty"},
 		{"zero date", Transaction{Amount: 10, Category: "food"}, "date", "date must be set"},
@@ -62,6 +64,8 @@ func TestBudgetValidate(t *testing.T) {
 		{"negative limit", Budget{Category: "food", Limit: -1}, "limit", "limit must be positive"},
 		{"nan limit", Budget{Category: "food", Limit: math.NaN()}, "limit", "limit must be positive"},
 		{"inf limit", Budget{Category: "food", Limit: math.Inf(-1)}, "limit", "limit must be positive"},
+		{"limit below min", Budget{Category: "food", Limit: 0.001}, "limit", "limit must be between 0.01 and 999999999999.99"},
+		{"limit above max", Budget{Category: "food", Limit: 1e13}, "limit", "limit must be between 0.01 and 999999999999.99"},
 		{"empty category", Budget{Category: "", Limit: 100}, "category", "category must not be empty"},
 		{"blank category", Budget{Category: " \t", Limit: 100}, "category", "category must not be empty"},
 	})

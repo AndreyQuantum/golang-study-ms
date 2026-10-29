@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
 func TestBudgetsAPI(t *testing.T) {
@@ -119,11 +117,11 @@ func TestTransactionsAPI(t *testing.T) {
 		resetLedger(t)
 		requireJSON(t, do(t, http.MethodPost, "/api/budgets", `{"category":"еда","limit":500}`), http.StatusCreated)
 		requireJSON(t, do(t, http.MethodPost, "/api/transactions", okBody), http.StatusCreated)
-		before := len(ledger.ListTransactions())
+		before := len(mustTransactions(t))
 		rec := do(t, http.MethodPost, "/api/transactions", okBody)
 		requireJSON(t, rec, http.StatusConflict)
 		assert.Equal(t, `{"error":"budget exceeded"}`+"\n", rec.Body.String())
-		assert.Len(t, ledger.ListTransactions(), before)
+		assert.Len(t, mustTransactions(t), before)
 	})
 
 	t.Run("bad_json", func(t *testing.T) {
@@ -179,5 +177,74 @@ func TestRouter(t *testing.T) {
 		rec := do(t, http.MethodDelete, "/api/budgets", "")
 		requireJSON(t, rec, http.StatusMethodNotAllowed)
 		assert.JSONEq(t, `{"error":"method not allowed"}`, rec.Body.String())
+	})
+}
+
+func TestReportSummaryAPI(t *testing.T) {
+	seed := func(t *testing.T) {
+		t.Helper()
+		resetLedger(t)
+		for _, body := range []string{
+			`{"amount":100.10,"category":"еда","date":"2026-10-01"}`,
+			`{"amount":50.20,"category":"еда","date":"2026-10-10"}`,
+			`{"amount":30,"category":"транспорт","date":"2026-10-05"}`,
+			`{"amount":999,"category":"еда","date":"2026-09-30"}`,
+		} {
+			requireJSON(t, do(t, http.MethodPost, "/api/transactions", body), http.StatusCreated)
+		}
+	}
+
+	t.Run("ok", func(t *testing.T) {
+		seed(t)
+		rec := do(t, http.MethodGet, "/api/reports/summary?from=2026-10-01&to=2026-10-10", "")
+		requireJSON(t, rec, http.StatusOK)
+		var got ReportSummaryResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		assert.Equal(t, ReportSummaryResponse{
+			From:  "2026-10-01",
+			To:    "2026-10-10",
+			Total: 180.30,
+			Categories: []CategoryTotalResponse{
+				{Category: "еда", Total: 150.30},
+				{Category: "транспорт", Total: 30},
+			},
+		}, got)
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		resetLedger(t)
+		rec := do(t, http.MethodGet, "/api/reports/summary?from=2026-10-01&to=2026-10-31", "")
+		requireJSON(t, rec, http.StatusOK)
+		assert.JSONEq(t, `{"from":"2026-10-01","to":"2026-10-31","total":0,"categories":[]}`, rec.Body.String())
+	})
+
+	t.Run("same_day", func(t *testing.T) {
+		seed(t)
+		rec := do(t, http.MethodGet, "/api/reports/summary?from=2026-10-05&to=2026-10-05", "")
+		requireJSON(t, rec, http.StatusOK)
+		var got ReportSummaryResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		assert.Equal(t, 30.0, got.Total)
+	})
+
+	bad := map[string]string{
+		"missing_from":   "/api/reports/summary?to=2026-10-10",
+		"missing_to":     "/api/reports/summary?from=2026-10-01",
+		"missing_both":   "/api/reports/summary",
+		"bad_from":       "/api/reports/summary?from=01.10.2026&to=2026-10-10",
+		"bad_to":         "/api/reports/summary?from=2026-10-01&to=tomorrow",
+		"from_after_to":  "/api/reports/summary?from=2026-10-11&to=2026-10-10",
+		"impossible_day": "/api/reports/summary?from=2026-02-31&to=2026-03-01",
+	}
+	for name, path := range bad {
+		t.Run(name, func(t *testing.T) {
+			resetLedger(t)
+			requireErrorBody(t, do(t, http.MethodGet, path, ""), http.StatusBadRequest)
+		})
+	}
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		resetLedger(t)
+		requireErrorBody(t, do(t, http.MethodPost, "/api/reports/summary?from=2026-10-01&to=2026-10-10", ""), http.StatusMethodNotAllowed)
 	})
 }
