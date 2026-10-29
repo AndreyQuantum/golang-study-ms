@@ -49,3 +49,10 @@ func ListBudgets() []Budget {
 func CheckValid(v Validatable) error {
 	return entity.CheckValid(v)
 }
+
+func Reset() {
+	mu.Lock()
+	defer mu.Unlock()
+	budgetRepo = repository.NewBudgetRepository()
+	transactions = repository.NewTransactionRepository(budgetRepo)
+}
