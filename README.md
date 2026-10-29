@@ -218,13 +218,13 @@ LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_te
 
 | Модуль / пакет                    | Покрытие |
 |-----------------------------------|----------|
-| `ledger` (итог по модулю)         | 53.4%    |
-| `ledger` (фасад)                  | 80.8%    |
+| `ledger` (итог по модулю)         | 53.7%    |
+| `ledger` (фасад)                  | 78.9%    |
 | `ledger/entity`                   | 100.0%   |
 | `ledger/repository`               | 98.3%    |
 | `ledger/internal/cache`           | 97.2%    |
-| `ledger/internal/db`              | 92.6%    |
-| `ledger/internal/postgres`        | 0.0% (82.9% с `LEDGER_TEST_DATABASE_URL`) |
+| `ledger/internal/db`              | 93.9%    |
+| `ledger/internal/postgres`        | 0.0% (83.1% с `LEDGER_TEST_DATABASE_URL`) |
 | `ledger/cmd/ledger` (демо-main)   | 0.0%     |
 | `gateway` (итог по модулю)        | 74.7%    |
 | `gateway/internal/api`            | 88.5%    |

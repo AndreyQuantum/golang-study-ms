@@ -24,7 +24,7 @@ func New(db *sql.DB) *Store {
 }
 
 func money(x float64) string {
-	return strconv.FormatFloat(x, 'f', 2, 64)
+	return strconv.FormatFloat(math.Round(x*100)/100, 'f', 2, 64)
 }
 
 func dayUTC(t time.Time) time.Time {
