@@ -26,6 +26,7 @@ func NewRouter() http.Handler {
 		r.Get("/transactions", listTransactions)
 		r.Post("/budgets", createBudget)
 		r.Get("/budgets", listBudgets)
+		r.Get("/reports/summary", reportSummary)
 	})
 	return r
 }

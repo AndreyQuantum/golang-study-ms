@@ -48,3 +48,10 @@ func requireErrorBody(t *testing.T, rec *httptest.ResponseRecorder, status int) 
 	require.NotEmpty(t, e.Error)
 	return e
 }
+
+func mustTransactions(t *testing.T) []ledger.Transaction {
+	t.Helper()
+	got, err := ledger.ListTransactions()
+	require.NoError(t, err)
+	return got
+}

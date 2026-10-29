@@ -49,19 +49,27 @@ func (r *BudgetRepository) ListBudgets() []entity.Budget {
 	return result
 }
 
-func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
+func ParseBudgets(rd io.Reader) ([]entity.Budget, error) {
 	dec := json.NewDecoder(rd)
 	dec.DisallowUnknownFields()
 
 	var budgets []entity.Budget
 	if err := dec.Decode(&budgets); err != nil {
-		return fmt.Errorf("parse budgets json: %w", err)
+		return nil, fmt.Errorf("parse budgets json: %w", err)
 	}
 
 	for i, b := range budgets {
 		if err := b.Validate(); err != nil {
-			return fmt.Errorf("budget #%d: %w", i, err)
+			return nil, fmt.Errorf("budget #%d: %w", i, err)
 		}
+	}
+	return budgets, nil
+}
+
+func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
+	budgets, err := ParseBudgets(rd)
+	if err != nil {
+		return err
 	}
 
 	r.mu.Lock()

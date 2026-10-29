@@ -15,6 +15,20 @@ import (
 
 var testDate = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
+func mustTransactions(t *testing.T) []ledger.Transaction {
+	t.Helper()
+	got, err := ledger.ListTransactions()
+	require.NoError(t, err)
+	return got
+}
+
+func mustBudgets(t *testing.T) []ledger.Budget {
+	t.Helper()
+	got, err := ledger.ListBudgets()
+	require.NoError(t, err)
+	return got
+}
+
 func TestTransactionValidate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -108,12 +122,12 @@ func TestBudgetFlow(t *testing.T) {
 
 	_, err := ledger.AddTransaction(ledger.Transaction{Amount: 3000, Category: "еда", Date: testDate})
 	require.NoError(t, err)
-	before := len(ledger.ListTransactions())
+	before := len(mustTransactions(t))
 
 	_, err = ledger.AddTransaction(ledger.Transaction{Amount: 2500, Category: "еда", Date: testDate})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ledger.ErrBudgetExceeded))
-	assert.Len(t, ledger.ListTransactions(), before)
+	assert.Len(t, mustTransactions(t), before)
 
 	t.Run("exactly at limit", func(t *testing.T) {
 		ledger.Reset()
@@ -135,7 +149,7 @@ func TestBudgetFlow(t *testing.T) {
 		_, err := ledger.AddTransaction(ledger.Transaction{Amount: -1, Category: "еда", Date: testDate})
 		var ve *ledger.ValidationError
 		assert.True(t, errors.As(err, &ve))
-		assert.Empty(t, ledger.ListTransactions())
+		assert.Empty(t, mustTransactions(t))
 	})
 
 	t.Run("invalid budget not saved", func(t *testing.T) {
@@ -143,7 +157,7 @@ func TestBudgetFlow(t *testing.T) {
 		err := ledger.SetBudget(ledger.Budget{Category: "еда", Limit: 0})
 		var ve *ledger.ValidationError
 		assert.True(t, errors.As(err, &ve))
-		assert.Empty(t, ledger.ListBudgets())
+		assert.Empty(t, mustBudgets(t))
 	})
 
 	t.Run("raise limit", func(t *testing.T) {
@@ -156,7 +170,7 @@ func TestBudgetFlow(t *testing.T) {
 		require.NoError(t, ledger.SetBudget(ledger.Budget{Category: "еда", Limit: 200}))
 		_, err = ledger.AddTransaction(ledger.Transaction{Amount: 50, Category: "еда", Date: testDate})
 		assert.NoError(t, err)
-		assert.Len(t, ledger.ListBudgets(), 1)
+		assert.Len(t, mustBudgets(t), 1)
 	})
 
 	t.Run("budgets sorted", func(t *testing.T) {
@@ -164,7 +178,7 @@ func TestBudgetFlow(t *testing.T) {
 		for _, c := range []string{"яблоки", "авто", "быт"} {
 			require.NoError(t, ledger.SetBudget(ledger.Budget{Category: c, Limit: 1}))
 		}
-		got := ledger.ListBudgets()
+		got := mustBudgets(t)
 		require.Len(t, got, 3)
 		assert.Equal(t, []string{"авто", "быт", "яблоки"}, []string{got[0].Category, got[1].Category, got[2].Category})
 	})
@@ -175,8 +189,8 @@ func TestBudgetFlow(t *testing.T) {
 		_, err := ledger.AddTransaction(ledger.Transaction{Amount: 1, Category: "еда", Date: testDate})
 		require.NoError(t, err)
 		ledger.Reset()
-		assert.Empty(t, ledger.ListBudgets())
-		assert.Empty(t, ledger.ListTransactions())
+		assert.Empty(t, mustBudgets(t))
+		assert.Empty(t, mustTransactions(t))
 	})
 
 	t.Run("sequential ids", func(t *testing.T) {
@@ -199,9 +213,9 @@ func TestConcurrentAdd(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, _ = ledger.AddTransaction(ledger.Transaction{Amount: 1, Category: "conc", Date: testDate})
-			_ = ledger.ListTransactions()
+			_, _ = ledger.ListTransactions()
 		}()
 	}
 	wg.Wait()
-	assert.Len(t, ledger.ListTransactions(), 50)
+	assert.Len(t, mustTransactions(t), 50)
 }

@@ -63,3 +63,23 @@ func TestBudgetDTO(t *testing.T) {
 	assert.Empty(t, empty)
 	assert.Len(t, NewBudgetResponses([]ledger.Budget{b}), 1)
 }
+
+func TestNewReportSummaryResponse(t *testing.T) {
+	t.Parallel()
+	got := NewReportSummaryResponse(ledger.ReportSummary{
+		From:       "2026-10-01",
+		To:         "2026-10-31",
+		Total:      12.5,
+		Categories: []ledger.CategoryTotal{{Category: "a", Total: 12.5}},
+	})
+	assert.Equal(t, ReportSummaryResponse{
+		From:       "2026-10-01",
+		To:         "2026-10-31",
+		Total:      12.5,
+		Categories: []CategoryTotalResponse{{Category: "a", Total: 12.5}},
+	}, got)
+
+	empty := NewReportSummaryResponse(ledger.ReportSummary{})
+	assert.NotNil(t, empty.Categories)
+	assert.Empty(t, empty.Categories)
+}

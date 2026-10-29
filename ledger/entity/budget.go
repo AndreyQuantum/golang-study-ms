@@ -16,6 +16,9 @@ func (b Budget) Validate() error {
 	if math.IsNaN(b.Limit) || math.IsInf(b.Limit, 0) || b.Limit <= 0 {
 		return &ValidationError{Field: "limit", Message: "limit must be positive"}
 	}
+	if b.Limit < MinMoney || b.Limit > MaxMoney {
+		return &ValidationError{Field: "limit", Message: "limit must be between 0.01 and 999999999999.99"}
+	}
 	if strings.TrimSpace(b.Category) == "" {
 		return &ValidationError{Field: "category", Message: "category must not be empty"}
 	}
