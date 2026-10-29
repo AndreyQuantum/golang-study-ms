@@ -136,7 +136,7 @@ func setBudget(budgets *repository.BudgetRepository, b entity.Budget) {
 }
 
 func addTransaction(repo *repository.TransactionRepository, tx entity.Transaction) {
-	err := repo.AddTransaction(tx)
+	_, err := repo.AddTransaction(tx)
 	var ve *entity.ValidationError
 	switch {
 	case err == nil:

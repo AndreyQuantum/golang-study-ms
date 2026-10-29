@@ -6,11 +6,13 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"sync"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
 )
 
 type BudgetRepository struct {
+	mu      sync.RWMutex
 	budgets map[string]entity.Budget
 }
 
@@ -24,16 +26,22 @@ func (r *BudgetRepository) SetBudget(b entity.Budget) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.budgets[b.Category] = b
 	return nil
 }
 
 func (r *BudgetRepository) GetBudget(category string) (entity.Budget, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	b, ok := r.budgets[category]
 	return b, ok
 }
 
 func (r *BudgetRepository) ListBudgets() []entity.Budget {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]entity.Budget, 0, len(r.budgets))
 	for _, category := range slices.Sorted(maps.Keys(r.budgets)) {
 		result = append(result, r.budgets[category])
@@ -56,6 +64,8 @@ func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
 		}
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, b := range budgets {
 		r.budgets[b.Category] = b
 	}
