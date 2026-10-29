@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"time"
 
@@ -17,10 +18,12 @@ func main() {
 	repo := repository.NewTransactionRepository(budgets)
 	fmt.Println("Ledger service started")
 
+	demoCheckValid()
+
 	if err := loadBudgetsFromFile(budgets, "budgets.json"); err != nil {
 		log.Fatalf("load budgets: %v", err)
 	}
-	budgets.SetBudget(entity.Budget{Category: "entertainment", Limit: 3000})
+	setBudget(budgets, entity.Budget{Category: "entertainment", Limit: 3000})
 	printBudgets(budgets)
 
 	fmt.Println("\n== Сценарий 1: транзакция в пределах лимита")
@@ -41,7 +44,7 @@ func main() {
 	addTransaction(repo, restaurant)
 
 	fmt.Println("\n== Сценарий 3: увеличиваем лимит через SetBudget и повторяем")
-	budgets.SetBudget(entity.Budget{Category: "food", Limit: 6000})
+	setBudget(budgets, entity.Budget{Category: "food", Limit: 6000})
 	fmt.Println("Новый лимит food: 6000.00")
 	addTransaction(repo, restaurant)
 
@@ -69,6 +72,14 @@ func main() {
 		Date:        time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC),
 	})
 
+	fmt.Println("\n== Сценарий 7: невалидная транзакция (отрицательная сумма)")
+	addTransaction(repo, entity.Transaction{
+		Amount:      -500,
+		Category:    "food",
+		Description: "Возврат",
+		Date:        time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC),
+	})
+
 	fmt.Println("\n== Сохранённые транзакции (отклонённых здесь быть не должно)")
 	for _, t := range repo.ListTransactions() {
 		fmt.Printf("#%d | %s | %-13s | %8.2f | %s\n",
@@ -76,12 +87,41 @@ func main() {
 	}
 }
 
+func demoCheckValid() {
+	fmt.Println("\n== CheckValid: одна функция, разные типы")
+	items := []struct {
+		name string
+		v    entity.Validatable
+	}{
+		{"Transaction (валидная)", entity.Transaction{
+			Amount:   100,
+			Category: "food",
+			Date:     time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		{"Transaction (amount = NaN)", entity.Transaction{
+			Amount:   math.NaN(),
+			Category: "food",
+			Date:     time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		{"Budget (валидный)", entity.Budget{Category: "food", Limit: 5000}},
+		{"Budget (лимит 0)", entity.Budget{Category: "food", Limit: 0}},
+	}
+	for _, it := range items {
+		if err := entity.CheckValid(it.v); err != nil {
+			fmt.Printf("%-27s -> ошибка: %v\n", it.name, err)
+			continue
+		}
+		fmt.Printf("%-27s -> OK\n", it.name)
+	}
+	fmt.Println()
+}
+
 func loadBudgetsFromFile(budgets *repository.BudgetRepository, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open budgets file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := budgets.LoadBudgets(bufio.NewReader(f)); err != nil {
 		return fmt.Errorf("load budgets from %s: %w", path, err)
@@ -89,13 +129,22 @@ func loadBudgetsFromFile(budgets *repository.BudgetRepository, path string) erro
 	return nil
 }
 
+func setBudget(budgets *repository.BudgetRepository, b entity.Budget) {
+	if err := budgets.SetBudget(b); err != nil {
+		log.Fatalf("set budget %q: %v", b.Category, err)
+	}
+}
+
 func addTransaction(repo *repository.TransactionRepository, tx entity.Transaction) {
 	err := repo.AddTransaction(tx)
+	var ve *entity.ValidationError
 	switch {
 	case err == nil:
 		fmt.Printf("OK: %q (%s, %.2f) добавлена\n", tx.Description, tx.Category, tx.Amount)
 	case errors.Is(err, repository.ErrBudgetExceeded):
 		fmt.Printf("ОТКАЗ: %q не добавлена: %v\n", tx.Description, err)
+	case errors.As(err, &ve):
+		fmt.Printf("ОТКАЗ (валидация): %q не добавлена: %v\n", tx.Description, err)
 	default:
 		fmt.Printf("ОШИБКА: %q: %v\n", tx.Description, err)
 	}

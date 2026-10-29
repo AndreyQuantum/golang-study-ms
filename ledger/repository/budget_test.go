@@ -12,12 +12,16 @@ import (
 func TestSetBudget_AddsAndUpdates(t *testing.T) {
 	r := NewBudgetRepository()
 
-	r.SetBudget(entity.Budget{Category: "food", Limit: 5000})
+	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 5000}); err != nil {
+		t.Fatalf("SetBudget: %v", err)
+	}
 	if b, ok := r.GetBudget("food"); !ok || b.Limit != 5000 {
 		t.Fatalf("after add: got %+v, ok=%v; want limit 5000", b, ok)
 	}
 
-	r.SetBudget(entity.Budget{Category: "food", Limit: 7000})
+	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 7000}); err != nil {
+		t.Fatalf("SetBudget: %v", err)
+	}
 	if b, ok := r.GetBudget("food"); !ok || b.Limit != 7000 {
 		t.Fatalf("after update: got %+v, ok=%v; want limit 7000", b, ok)
 	}
@@ -59,8 +63,10 @@ func TestLoadBudgets_Errors(t *testing.T) {
 		{"not an array", `{"category": "food", "limit": 5000}`, "parse budgets json"},
 		{"wrong type", `[{"category": "food", "limit": "5000"}]`, "parse budgets json"},
 		{"unknown field", `[{"category": "food", "limt": 5000}]`, "unknown field"},
-		{"empty category", `[{"category": "", "limit": 5000}]`, "empty category"},
-		{"negative limit", `[{"category": "food", "limit": -1}]`, "negative limit"},
+		{"empty category", `[{"category": "", "limit": 5000}]`, "budget #0: category must not be empty"},
+		{"blank category", `[{"category": "  ", "limit": 5000}]`, "category must not be empty"},
+		{"negative limit", `[{"category": "food", "limit": -1}]`, "budget #0: limit must be positive"},
+		{"zero limit", `[{"category": "food", "limit": 0}]`, "limit must be positive"},
 	}
 
 	for _, tt := range tests {
@@ -86,7 +92,9 @@ func TestLoadBudgets_ReadError(t *testing.T) {
 
 func TestLoadBudgets_InvalidDoesNotModifyStorage(t *testing.T) {
 	r := NewBudgetRepository()
-	r.SetBudget(entity.Budget{Category: "food", Limit: 5000})
+	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 5000}); err != nil {
+		t.Fatalf("SetBudget: %v", err)
+	}
 
 	input := `[{"category": "food", "limit": 100}, {"category": "", "limit": 1}]`
 	if err := r.LoadBudgets(strings.NewReader(input)); err == nil {
@@ -95,5 +103,32 @@ func TestLoadBudgets_InvalidDoesNotModifyStorage(t *testing.T) {
 
 	if b, _ := r.GetBudget("food"); b.Limit != 5000 {
 		t.Fatalf("food limit = %.2f, want unchanged 5000", b.Limit)
+	}
+}
+
+func TestSetBudget_InvalidIsNotSaved(t *testing.T) {
+	tests := []struct {
+		name string
+		b    entity.Budget
+		want string
+	}{
+		{"zero limit", entity.Budget{Category: "food"}, "limit must be positive"},
+		{"negative limit", entity.Budget{Category: "food", Limit: -1}, "limit must be positive"},
+		{"empty category", entity.Budget{Limit: 10}, "category must not be empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewBudgetRepository()
+			err := r.SetBudget(tt.b)
+
+			var ve *entity.ValidationError
+			if !errors.As(err, &ve) || err.Error() != tt.want {
+				t.Fatalf("err = %v, want ValidationError %q", err, tt.want)
+			}
+			if n := len(r.ListBudgets()); n != 0 {
+				t.Fatalf("budgets = %d, want 0", n)
+			}
+		})
 	}
 }
