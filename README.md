@@ -126,7 +126,7 @@ Budget (лимит 0)            -> ошибка: limit must be positive
 ### Фасад
 
 Корневой пакет `ledger` (`ledger/ledger.go`) — потокобезопасный фасад над репозиториями с хранилищем в памяти:
-`AddTransaction`, `ListTransactions`, `SetBudget`, `ListBudgets`, `CheckValid`, а также алиасы типов и `ErrBudgetExceeded`.
+`AddTransaction`, `ListTransactions`, `SetBudget`, `ListBudgets`, `CheckValid`, `Reset` (очистка хранилища для тестов), а также алиасы типов и `ErrBudgetExceeded`.
 Его импортирует `gateway`. Демо-программа лежит в `ledger/cmd/ledger` и работает через репозитории напрямую.
 
 ### Валидация
@@ -147,14 +147,45 @@ Budget (лимит 0)            -> ошибка: limit must be positive
 `LoadBudgets` проверяет каждый элемент (`budget #1: limit must be positive`) и остаётся атомарным. Лимит `0` теперь невалиден.
 Превышение лимита сравнивается в центах, поэтому `0.1 + 0.2` укладывается в лимит `0.3`.
 
-### Тесты
+## Тесты
+
+Тесты написаны на стандартном `testing` с `github.com/stretchr/testify` (`assert`/`require`). Фасад `ledger` умеет сбрасывать
+хранилище через `ledger.Reset()`, поэтому тесты, меняющие состояние, вызывают его в начале и в `t.Cleanup`.
 
 ```sh
 cd ledger
-go test ./...        # кратко
-go test -v ./...     # с перечнем тестов
+go test ./... -cover -coverprofile=cover.out
+go tool cover -func=cover.out | tail -1
+go tool cover -html=cover.out -o cover.html
+
+cd ../gateway
+go test ./... -cover -coverprofile=cover.out
+go tool cover -func=cover.out | tail -1
+go tool cover -html=cover.out -o cover.html
 ```
 
-Тесты покрывают `Validate` для `Transaction` и `Budget`, `CheckValid`, `SetBudget`, `LoadBudgets` (корректный JSON,
-ошибки парсинга, валидации и чтения) и `AddTransaction` (в пределах лимита, ровно на лимит, превышение без сохранения,
-категория без бюджета, повышение лимита, невалидные транзакции не сохраняются).
+`cover.out` и `cover.html` лежат в `.gitignore`.
+
+Что покрыто:
+
+- `ledger`: `Validate` для `Transaction` и `Budget` (табличные тесты с `t.Parallel`), `CheckValid`, сценарии бюджета через фасад
+  (в пределах лимита, ровно на лимит, превышение без сохранения, категория без бюджета, невалидные объекты не сохраняются,
+  повышение лимита, сортировка бюджетов, `Reset`, последовательные ID), конкурентное добавление;
+- `ledger/repository` и `ledger/entity`: репозитории, `LoadBudgets`, валидация;
+- `gateway/internal/api`: `POST/GET /api/budgets` и `/api/transactions` (201, 400, 409), `404`/`405` в формате JSON, `GET /ping`,
+  middleware `Logging` и `JSONContentType`, DTO-преобразователи.
+
+Достигнутое покрытие:
+
+| Модуль / пакет                    | Покрытие |
+|-----------------------------------|----------|
+| `ledger` (итог по модулю)         | 59.9%    |
+| `ledger` (фасад)                  | 100.0%   |
+| `ledger/entity`                   | 100.0%   |
+| `ledger/repository`               | 98.2%    |
+| `ledger/cmd/ledger` (демо-main)   | 0.0%     |
+| `gateway` (итог по модулю)        | 78.9%    |
+| `gateway/internal/api`            | 92.5%    |
+| `gateway` (`main.go`)             | 0.0%     |
+
+Итог по модулю занижен из-за `main`-пакетов без тестов.
