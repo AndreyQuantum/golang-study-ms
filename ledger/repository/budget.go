@@ -6,11 +6,13 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"sync"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
 )
 
 type BudgetRepository struct {
+	mu      sync.RWMutex
 	budgets map[string]entity.Budget
 }
 
@@ -24,16 +26,22 @@ func (r *BudgetRepository) SetBudget(b entity.Budget) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.budgets[b.Category] = b
 	return nil
 }
 
 func (r *BudgetRepository) GetBudget(category string) (entity.Budget, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	b, ok := r.budgets[category]
 	return b, ok
 }
 
 func (r *BudgetRepository) ListBudgets() []entity.Budget {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]entity.Budget, 0, len(r.budgets))
 	for _, category := range slices.Sorted(maps.Keys(r.budgets)) {
 		result = append(result, r.budgets[category])
@@ -41,21 +49,31 @@ func (r *BudgetRepository) ListBudgets() []entity.Budget {
 	return result
 }
 
-func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
+func ParseBudgets(rd io.Reader) ([]entity.Budget, error) {
 	dec := json.NewDecoder(rd)
 	dec.DisallowUnknownFields()
 
 	var budgets []entity.Budget
 	if err := dec.Decode(&budgets); err != nil {
-		return fmt.Errorf("parse budgets json: %w", err)
+		return nil, fmt.Errorf("parse budgets json: %w", err)
 	}
 
 	for i, b := range budgets {
 		if err := b.Validate(); err != nil {
-			return fmt.Errorf("budget #%d: %w", i, err)
+			return nil, fmt.Errorf("budget #%d: %w", i, err)
 		}
 	}
+	return budgets, nil
+}
 
+func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
+	budgets, err := ParseBudgets(rd)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, b := range budgets {
 		r.budgets[b.Category] = b
 	}
