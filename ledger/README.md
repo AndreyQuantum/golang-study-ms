@@ -79,7 +79,27 @@ go run ./cmd/ledger -seed budgets.json -demo
 `Init`, `Close`, `SetBudget`, `ListBudgets`, `AddTransaction`, `ListTransactions`, `GetReportSummary(ctx, from, to)`, `CheckValid`, `Reset`
 (сброс на чистое хранилище в памяти). `SetBudget` и `AddTransaction` сначала вызывают `Validate`; `GetReportSummary` требует непустые
 `from`/`to` и `from <= to`, иначе возвращает `*ValidationError`. Превышение бюджета в PostgreSQL проверяется в одной транзакции БД
-с блокировкой строки бюджета (`FOR UPDATE`), сравнение суммы с лимитом выполняется в `NUMERIC`.
+с блокировкой строки бюджета (`FOR UPDATE`), сравнение суммы с лимитом выполняется в `NUMERIC`. Транзакция в категории без бюджета
+добавляется без ограничений.
+
+## Валидация
+
+Пакет `entity` содержит интерфейс `Validatable` с методом `Validate() error` и функцию `CheckValid(v Validatable) error`, которая работает
+с любым типом, реализующим интерфейс (`Transaction` и `Budget`). Ошибка валидации имеет тип `*entity.ValidationError` с полями `Field`
+и `Message` и распознаётся через `errors.As`. `Validate` только возвращает ошибку и ничего не логирует.
+
+| Тип           | Правило                                              | Сообщение |
+|---------------|------------------------------------------------------|-----------|
+| `Transaction` | `Amount` не NaN/Inf и больше 0                       | `amount must be positive` |
+| `Transaction` | `Amount` от `0.01` до `999999999999.99`              | `amount must be between 0.01 and 999999999999.99` |
+| `Transaction` | `Category` не пустая после `TrimSpace`               | `category must not be empty` |
+| `Transaction` | `Date` задана                                        | `date must be set` |
+| `Budget`      | `Limit` не NaN/Inf и больше 0                        | `limit must be positive` |
+| `Budget`      | `Limit` от `0.01` до `999999999999.99`               | `limit must be between 0.01 and 999999999999.99` |
+| `Budget`      | `Category` не пустая после `TrimSpace`               | `category must not be empty` |
+
+Диапазон сумм соответствует типу `NUMERIC(14,2)` в базе. В хранилище в памяти превышение лимита сравнивается в центах, поэтому
+`0.1 + 0.2` укладывается в лимит `0.3`.
 
 ## Тесты
 
