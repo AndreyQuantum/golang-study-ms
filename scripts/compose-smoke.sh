@@ -86,10 +86,10 @@ contains "ping содержит pong" pong "$BODY"
 http "POST /api/budgets" 201 POST /api/budgets '{"category":"smoke","limit":500}'
 http "GET /api/budgets" 200 GET /api/budgets
 contains "бюджеты содержат категорию" smoke "$BODY"
-http "POST /api/transactions" 201 POST /api/transactions '{"amount":450,"category":"smoke","description":"ланч","date":"2025-09-10"}'
+http "POST /api/transactions" 201 POST /api/transactions '{"amount":450,"category":"smoke","description":"lunch","date":"2025-09-10"}'
 http "GET /api/transactions" 200 GET /api/transactions
-contains "транзакции содержат ланч" "ланч" "$BODY"
-http "POST сверх лимита" 409 POST /api/transactions '{"amount":450,"category":"smoke","description":"ужин","date":"2025-09-11"}'
+contains "транзакции содержат lunch" "lunch" "$BODY"
+http "POST сверх лимита" 409 POST /api/transactions '{"amount":450,"category":"smoke","description":"dinner","date":"2025-09-11"}'
 http "GET /api/reports/summary" 200 GET "/api/reports/summary?from=2025-09-01&to=2025-09-30"
 contains "total равен 450" '"total":450' "$BODY"
 http "POST /api/transactions/bulk" 200 POST /api/transactions/bulk \
@@ -109,7 +109,7 @@ echo "== 8. перезапуск gateway"
 $DC restart gateway >/dev/null 2>&1
 wait_healthy gateway 90
 http "GET /api/transactions после рестарта" 200 GET /api/transactions
-contains "транзакция сохранилась" "ланч" "$BODY"
+contains "транзакция сохранилась" "lunch" "$BODY"
 
 echo "== 9. graceful shutdown"
 t0=$SECONDS
