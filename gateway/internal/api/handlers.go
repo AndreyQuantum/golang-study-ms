@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -9,7 +10,23 @@ import (
 	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
-func createTransaction(w http.ResponseWriter, r *http.Request) {
+// opTimeout ограничивает время одного обращения к сервису; отсчёт идёт от контекста запроса.
+const opTimeout = 5 * time.Second
+
+// Handler - HTTP-обработчики. Знает только ledger.Service: про БД и кеш ему ничего не известно.
+type Handler struct {
+	svc ledger.Service
+}
+
+func NewHandler(svc ledger.Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+func opCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), opTimeout)
+}
+
+func (h *Handler) createTransaction(w http.ResponseWriter, r *http.Request) {
 	var req CreateTransactionRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -25,7 +42,9 @@ func createTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saved, err := ledger.AddTransaction(tx)
+	ctx, cancel := opCtx(r)
+	defer cancel()
+	saved, err := h.svc.AddTransaction(ctx, tx)
 	var ve *ledger.ValidationError
 	switch {
 	case err == nil:
@@ -40,8 +59,10 @@ func createTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func listTransactions(w http.ResponseWriter, _ *http.Request) {
-	txs, err := ledger.ListTransactions()
+func (h *Handler) listTransactions(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := opCtx(r)
+	defer cancel()
+	txs, err := h.svc.ListTransactions(ctx)
 	if err != nil {
 		log.Printf("list transactions: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
@@ -50,7 +71,7 @@ func listTransactions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, NewTransactionResponses(txs))
 }
 
-func createBudget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createBudget(w http.ResponseWriter, r *http.Request) {
 	var req CreateBudgetRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -62,7 +83,9 @@ func createBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := ledger.SetBudget(b)
+	ctx, cancel := opCtx(r)
+	defer cancel()
+	err := h.svc.SetBudget(ctx, b)
 	var ve *ledger.ValidationError
 	switch {
 	case err == nil:
@@ -75,8 +98,10 @@ func createBudget(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func listBudgets(w http.ResponseWriter, _ *http.Request) {
-	budgets, err := ledger.ListBudgets()
+func (h *Handler) listBudgets(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := opCtx(r)
+	defer cancel()
+	budgets, err := h.svc.ListBudgets(ctx)
 	if err != nil {
 		log.Printf("list budgets: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
@@ -97,7 +122,7 @@ func parseDateParam(r *http.Request, name string) (time.Time, error) {
 	return t, nil
 }
 
-func reportSummary(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reportSummary(w http.ResponseWriter, r *http.Request) {
 	from, err := parseDateParam(r, "from")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -109,7 +134,9 @@ func reportSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := ledger.GetReportSummary(r.Context(), from, to)
+	ctx, cancel := opCtx(r)
+	defer cancel()
+	report, err := h.svc.GetReportSummary(ctx, from, to)
 	var ve *ledger.ValidationError
 	switch {
 	case err == nil:

@@ -4,9 +4,12 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
-func NewRouter() http.Handler {
+func NewRouter(svc ledger.Service) http.Handler {
+	h := NewHandler(svc)
 	r := chi.NewRouter()
 	r.Use(Logging, JSONContentType)
 
@@ -22,11 +25,11 @@ func NewRouter() http.Handler {
 	})
 
 	r.Route("/api", func(r chi.Router) {
-		r.Post("/transactions", createTransaction)
-		r.Get("/transactions", listTransactions)
-		r.Post("/budgets", createBudget)
-		r.Get("/budgets", listBudgets)
-		r.Get("/reports/summary", reportSummary)
+		r.Post("/transactions", h.createTransaction)
+		r.Get("/transactions", h.listTransactions)
+		r.Post("/budgets", h.createBudget)
+		r.Get("/budgets", h.listBudgets)
+		r.Get("/reports/summary", h.reportSummary)
 	})
 	return r
 }
