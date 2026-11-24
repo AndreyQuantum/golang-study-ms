@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/repository/memory"
 )
 
 func importTxs(n int, category string, amount float64) []domain.Transaction {
@@ -119,4 +120,87 @@ func TestImportSingleWorkerKeepsOrder(t *testing.T) {
 		assert.Equal(t, i+1, s.ID)
 		assert.Equal(t, fmt.Sprintf("item-%d", i), s.Description)
 	}
+}
+
+func TestImportRejectsInvalid(t *testing.T) {
+	svc := newService()
+	txs := importTxs(6, "food", 5)
+	txs[1].Amount = -1
+	txs[4].Category = ""
+	summary, err := svc.ImportTransactions(context.Background(), txs, 4)
+	require.NoError(t, err)
+	assert.Equal(t, 4, summary.Accepted)
+	assert.Equal(t, 2, summary.Rejected)
+	require.Len(t, summary.Errors, 2)
+	assert.Equal(t, 1, summary.Errors[0].Index)
+	assert.Equal(t, 4, summary.Errors[1].Index)
+	var ve *domain.ValidationError
+	require.ErrorAs(t, summary.Errors[0], &ve)
+	assert.Equal(t, "amount must be positive", ve.Message)
+	require.ErrorAs(t, summary.Errors[1], &ve)
+	assert.Equal(t, "category must not be empty", ve.Message)
+}
+
+func TestImportErrorsSortedByIndex(t *testing.T) {
+	svc := newService()
+	txs := importTxs(100, "food", -1) // все невалидны, воркеры завершают в произвольном порядке
+	summary, err := svc.ImportTransactions(context.Background(), txs, 16)
+	require.NoError(t, err)
+	require.Len(t, summary.Errors, 100)
+	for i, e := range summary.Errors {
+		assert.Equal(t, i, e.Index)
+	}
+}
+
+func TestImportBudgetExceededDeterministic(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+	require.NoError(t, svc.SetBudget(ctx, domain.Budget{Category: "food", Limit: 25}))
+	summary, err := svc.ImportTransactions(ctx, importTxs(5, "food", 10), 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, summary.Accepted)
+	assert.Equal(t, 3, summary.Rejected)
+	require.Len(t, summary.Errors, 3)
+	for i, e := range summary.Errors {
+		assert.Equal(t, i+2, e.Index)
+		assert.ErrorIs(t, e, domain.ErrBudgetExceeded)
+	}
+}
+
+func TestImportInternalErrorIsRejected(t *testing.T) {
+	st := memory.New()
+	svc := New(st.Repos(), categoryFailer{TxManager: st, bad: "broken"})
+	txs := importTxs(4, "food", 5)
+	txs[2].Category = "broken"
+	summary, err := svc.ImportTransactions(context.Background(), txs, 3)
+	require.NoError(t, err)
+	assert.Equal(t, 3, summary.Accepted)
+	require.Len(t, summary.Errors, 1)
+	assert.Equal(t, 2, summary.Errors[0].Index)
+	assert.EqualError(t, summary.Errors[0].Err, "boom")
+}
+
+// categoryFailer возвращает ошибку хранилища для транзакций заданной категории (категорию видно в repos через Add).
+type categoryFailer struct {
+	domain.TxManager
+	bad string
+}
+
+func (c categoryFailer) WithinTx(ctx context.Context, fn func(context.Context, domain.Repos) error) error {
+	return c.TxManager.WithinTx(ctx, func(ctx context.Context, r domain.Repos) error {
+		r.Expenses = failingAdd{ExpenseRepository: r.Expenses, bad: c.bad}
+		return fn(ctx, r)
+	})
+}
+
+type failingAdd struct {
+	domain.ExpenseRepository
+	bad string
+}
+
+func (f failingAdd) Add(ctx context.Context, t domain.Transaction) (domain.Transaction, error) {
+	if t.Category == f.bad {
+		return domain.Transaction{}, errors.New("boom")
+	}
+	return f.ExpenseRepository.Add(ctx, t)
 }
