@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,4 +68,55 @@ func TestImportCanceledBeforeStart(t *testing.T) {
 	assert.Zero(t, summary.Accepted+summary.Rejected)
 	assert.NotNil(t, summary.Errors)
 	assert.Empty(t, sp.names())
+}
+
+func TestImportAcceptsAll(t *testing.T) {
+	for _, workers := range []int{1, 4, 32} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			svc := newService()
+			txs := importTxs(50, "food", 10.005)
+			for i := range txs {
+				txs[i].Date = time.Date(2026, 10, 1, 15, 30, 0, 0, time.UTC)
+			}
+			summary, err := svc.ImportTransactions(context.Background(), txs, workers)
+			require.NoError(t, err)
+			assert.Equal(t, 50, summary.Accepted)
+			assert.Zero(t, summary.Rejected)
+			assert.NotNil(t, summary.Errors)
+			assert.Empty(t, summary.Errors)
+
+			stored, err := svc.ListTransactions(context.Background())
+			require.NoError(t, err)
+			require.Len(t, stored, 50)
+			for _, s := range stored {
+				assert.Equal(t, 10.01, s.Amount, "сумма округляется до копеек")
+				assert.Equal(t, day(10, 1), s.Date, "дата усечена до дня UTC")
+			}
+		})
+	}
+}
+
+func TestImportMoreWorkersThanItems(t *testing.T) {
+	svc := newService()
+	summary, err := svc.ImportTransactions(context.Background(), importTxs(3, "food", 5), 32)
+	require.NoError(t, err)
+	assert.Equal(t, 3, summary.Accepted)
+	stored, _ := svc.ListTransactions(context.Background())
+	assert.Len(t, stored, 3)
+}
+
+func TestImportSingleWorkerKeepsOrder(t *testing.T) {
+	svc := newService()
+	txs := importTxs(10, "food", 1)
+	for i := range txs {
+		txs[i].Description = fmt.Sprintf("item-%d", i)
+	}
+	_, err := svc.ImportTransactions(context.Background(), txs, 1)
+	require.NoError(t, err)
+	stored, _ := svc.ListTransactions(context.Background())
+	require.Len(t, stored, 10)
+	for i, s := range stored {
+		assert.Equal(t, i+1, s.ID)
+		assert.Equal(t, fmt.Sprintf("item-%d", i), s.Description)
+	}
 }
