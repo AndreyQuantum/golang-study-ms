@@ -13,7 +13,9 @@
 ## Структура
 
 ```
-docker-compose.yml           PostgreSQL 17 и Redis 7
+docker-compose.yml           стенд: db (PostgreSQL 17), redis (Redis 7) и gateway
+.dockerignore                что не попадает в контекст сборки образов
+scripts/compose-smoke.sh     проверка стенда compose: образы, healthcheck, эндпоинты, graceful shutdown
 ledger/
   ledger.go                  публичная точка входа: алиасы типов, Service, New, NewInMemory, CheckValid, ErrBudgetExceeded
   internal/domain/           сущности и валидация, Money, ошибки, интерфейсы репозиториев и TxManager, ParseBudgets, ImportSummary и лимиты импорта (import.go)
@@ -27,10 +29,12 @@ ledger/
   internal/testdb/           хелперы интеграционных тестов (используются только из _test.go)
   migrations/                миграции goose
   cmd/ledger/                демо-программа
+  Dockerfile                 multi-stage сборка образа демо-программы (контекст сборки - корень репозитория)
 gateway/
   main.go                    HTTP-сервер на :8080, graceful shutdown; сервис берёт из ledger.New
   internal/api/              роутер, Handler поверх ledger.Service, DTO, middleware (логирование, Content-Type, таймаут запроса),
                              пакетный импорт POST /api/transactions/bulk (bulk.go)
+  Dockerfile                 multi-stage сборка образа gateway (контекст сборки - корень репозитория)
 ```
 
 Зависимости направлены внутрь: `gateway` -> `ledger` (публичный пакет) -> `app` -> `service` -> `domain` <- `repository/*`.
@@ -45,7 +49,7 @@ Gateway - отдельный модуль и не может импортиро�
 ## Требования
 
 - Go 1.26+
-- Docker для PostgreSQL и Redis
+- Docker и Docker Compose (PostgreSQL, Redis и образы сервисов)
 - goose: `go install github.com/pressly/goose/v3/cmd/goose@latest`
 
 ## Быстрый старт
@@ -55,8 +59,11 @@ Gateway - отдельный модуль и не может импортиро�
 1. Поднять PostgreSQL и Redis:
 
    ```sh
-   docker compose up -d
+   docker compose up -d db redis
    ```
+
+   Сервис называется `db`. Если раньше стенд поднимался со старым сервисом `postgres`, добавьте `--remove-orphans`:
+   `docker compose up -d --remove-orphans db redis` (том `pgdata` с данными сохраняется). Без списка сервисов `docker compose up -d` поднимет ещё и gateway.
 
    Вместо compose можно запустить контейнеры вручную:
 
@@ -102,6 +109,94 @@ Gateway - отдельный модуль и не может импортиро�
 Ledger и gateway при старте вызывают фабрику `ledger.New(ctx)`: она подключается к PostgreSQL и Redis, пишет в лог `connected to PostgreSQL (...)` и
 `connected to Redis (...)` и возвращает сервис и `closeFn` для закрытия соединений. Если подключиться не удалось, процесс завершается с понятной ошибкой.
 Миграции фабрика не запускает: схему применяют отдельно через `goose up`.
+
+## Docker
+
+Стенд из HW11 - три сервиса в `docker-compose.yml`: `db` (PostgreSQL 17), `redis` (Redis 7) и `gateway` (собирается из `gateway/Dockerfile`).
+Все команды выполняются из корня репозитория.
+
+1. Поднять базу и Redis и дождаться статуса `healthy` (healthcheck базы - `pg_isready -U postgres -d cashapp`, Redis - `redis-cli ping`):
+
+   ```sh
+   docker compose up -d db redis
+   docker compose ps
+   ```
+
+2. Применить миграции с хоста через проброшенный порт 5432. Имя базы в этом проекте `cashapp`; `cashcraft` из задания - та же база, только под другим именем.
+
+   ```sh
+   export DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp?sslmode=disable"
+   goose -dir ./ledger/migrations postgres "$DATABASE_URL" up
+   ```
+
+   Миграции автоматически не применяются (отдельного сервиса миграций нет). Без них gateway стартует, но запросы к данным вернут 500.
+
+3. Собрать и запустить gateway, проверить статус и логи:
+
+   ```sh
+   docker compose up -d --build gateway
+   docker compose ps          # gateway: healthy
+   docker compose logs gateway
+   ```
+
+   Внутри сети compose gateway ходит в базу и Redis по именам сервисов: `DATABASE_URL=postgres://postgres:postgres@db:5432/cashapp?sslmode=disable`,
+   `REDIS_ADDR=redis:6379`. Gateway ждёт, пока у `db` и `redis` появится `healthy` (`depends_on` с `condition: service_healthy`), потому что без них он не стартует.
+
+4. Проверить снаружи, с хоста (остальные эндпоинты - в примерах cURL ниже):
+
+   ```sh
+   curl http://localhost:8080/ping
+   curl -X POST http://localhost:8080/api/budgets -H "Content-Type: application/json" -d '{"category":"food","limit":500}'
+   curl -X POST http://localhost:8080/api/transactions -H "Content-Type: application/json" -d '{"amount":450,"category":"food","description":"lunch","date":"2025-09-10"}'
+   curl http://localhost:8080/api/transactions
+   curl "http://localhost:8080/api/reports/summary?from=2025-09-01&to=2025-09-30"
+   curl -X POST http://localhost:8080/api/transactions/bulk -H "Content-Type: application/json" \
+     -d '[{"amount":5,"category":"taxi","date":"2025-09-12"},{"amount":5,"category":"taxi","date":"12.09.2025"}]'
+   ```
+
+   и изнутри контейнера (в образе есть `wget` из busybox, им же работает healthcheck):
+
+   ```sh
+   docker compose exec gateway wget -qO- http://localhost:8080/ping
+   ```
+
+5. Остановить: `docker compose down` оставляет данные (том `pgdata`), `docker compose down -v` удаляет и том, то есть всю базу.
+
+Переменные compose, все необязательные: `DB_PORT`, `REDIS_PORT`, `GATEWAY_PORT` (хост-порты, по умолчанию 5432, 6379, 8080) и `REQUEST_TIMEOUT` (по умолчанию `2s`).
+Для локальной разработки по-прежнему хватает `docker compose up -d db redis` и запуска `go run .` на хосте.
+
+### Образы
+
+```sh
+docker build -f gateway/Dockerfile -t cashapp-gateway .
+docker build -f ledger/Dockerfile -t cashapp-ledger .
+```
+
+Gateway без базы и Redis не стартует, поэтому одиночный `docker run` работает только рядом с ними. Пример при базе и Redis на хосте (из контейнера хост виден как `host.docker.internal`):
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL="postgres://postgres:postgres@host.docker.internal:5432/cashapp?sslmode=disable" \
+  -e REDIS_ADDR=host.docker.internal:6379 cashapp-gateway
+```
+
+Образ ledger собирается, но в compose не входит: он запускает демо-программу (`-seed budgets.json`), и сервисом он станет позже. Gateway использует ledger как библиотеку.
+
+**Почему контекст сборки - корень репозитория, а не `./gateway`.** Gateway подключает ledger через `replace => ../ledger` в `gateway/go.mod`. Docker видит только файлы
+внутри контекста, поэтому при сборке из `./gateway` каталога `ledger` в образе не окажется и `go build` не найдёт модуль. Контекст - корень, а нужный Dockerfile выбирается ключом `-f`
+(в compose - `build: { context: ., dockerfile: gateway/Dockerfile }`). Для единообразия так же собирается и `ledger/Dockerfile`. Корневой `.dockerignore` отсекает `.git`, файлы покрытия, бинарники, README и скрипты.
+
+Как устроена сборка:
+
+- Builder - `golang:1.26-alpine` (в `go.mod` указан `go 1.26.0`, образ `golang:1.24-alpine` из примера задания не подошёл бы).
+- Сначала копируются только `go.mod` и `go.sum` обоих модулей и выполняется `go mod download`, потом исходники: пока зависимости не менялись, слой с ними берётся из кеша, и правка кода пересобирает только последние слои.
+- Бинарь собирается с `CGO_ENABLED=0 -trimpath -ldflags "-s -w"`, поэтому запускается в минимальном `alpine` без Go. Процесс работает от непривилегированного пользователя `app`.
+- `ENTRYPOINT` записан в exec-форме: процесс получает SIGTERM от `docker stop` и завершается через graceful shutdown (в логе `gateway stopped`).
+
+### Проверка стенда
+
+`bash scripts/compose-smoke.sh` собирает образы, поднимает стенд в отдельном проекте compose `hw11smoke` на портах 15432, 16379 и 18080, применяет миграции, проверяет все эндпоинты
+(включая summary и bulk), `wget` внутри контейнера, данные в базе, перезапуск и остановку gateway, затем сносит только свой проект. Рабочий стенд и его данные скрипт не трогает. `KEEP=1` оставляет стенд после проверки.
 
 ## API
 
@@ -296,7 +391,7 @@ go tool cover -html=cover.out -o cover.html
 (`internal/testdb`), поэтому `go test ./...` не гоняет их параллельно друг с другом:
 
 ```sh
-docker compose exec postgres createdb -U postgres cashapp_test
+docker compose exec db createdb -U postgres cashapp_test
 goose -dir ./ledger/migrations postgres "postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" up
 cd ledger
 LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" go test ./internal/repository/pg ./internal/app -cover
@@ -340,3 +435,4 @@ LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_te
 | 8  | чистая архитектура: domain, repository, service, app; интерфейсы репозиториев и `ledger.Service`, фабрика `ledger.New`, gateway работает через интерфейс сервиса |
 | 9  | конкурентный отчёт по категориям (горутины, `sync.WaitGroup`, `ctx`), heartbeat на `time.Ticker`, middleware таймаута (504), `REQUEST_TIMEOUT` |
 | 10 | worker-pool пакетного импорта: каналы jobs/results, `sync.WaitGroup`, отдельный коллектор, счётчики на `atomic`, отмена по `ctx`, `POST /api/transactions/bulk` с частичной сводкой и 504 |
+| 11 | Docker: multi-stage Dockerfile для gateway и ledger, docker-compose со стендом db + redis + gateway, healthcheck, `depends_on` с `service_healthy`, `.dockerignore`, скрипт проверки стенда |

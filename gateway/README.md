@@ -4,7 +4,7 @@ HTTP-шлюз (chi) поверх пакета `ledger`. Эндпоинты те 
 
 ## Запуск
 
-1. Поднять PostgreSQL и Redis: `docker compose up -d` из корня репозитория (или `docker run`, см. [ledger/README.md](../ledger/README.md)).
+1. Поднять PostgreSQL и Redis: `docker compose up -d db redis` из корня репозитория (или `docker run`, см. [ledger/README.md](../ledger/README.md)).
 2. Установить goose и применить миграции из корня репозитория:
 
 ```sh
@@ -22,6 +22,7 @@ go run .
 
 Подключение настраивается переменными `DATABASE_URL` (или `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`) и
 `REDIS_ADDR`, `REDIS_DB`, `REDIS_PASSWORD`; таймаут запроса - `REQUEST_TIMEOUT` (по умолчанию `2s`, см. ниже). Если PostgreSQL или Redis недоступны, сервис завершается с понятной ошибкой.
+Запуск в Docker (сервисы `db`, `redis`, `gateway` в compose, образ собирается из корня репозитория): раздел [Docker](../README.md#docker) в корневом README.
 Откатить миграции: `goose -dir ./ledger/migrations postgres "$DATABASE_URL" down`.
 
 ## Как gateway получает сервис
