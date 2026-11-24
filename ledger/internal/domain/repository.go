@@ -29,8 +29,15 @@ type ExpenseRepository interface {
 	// SumByCategory возвращает сумму расходов категории, 0 если расходов нет.
 	SumByCategory(ctx context.Context, category string) (Money, error)
 	// TotalsByCategory возвращает суммы по категориям за интервал дат (включительно, дни UTC)
-	// по category по возрастанию, не nil.
+	// по category по возрастанию, не nil. Отчёт сервиса им больше не пользуется (он считает через
+	// Categories и SumByCategoryBetween), но метод остаётся контрактом и эталоном в тестах.
 	TotalsByCategory(ctx context.Context, from, to time.Time) ([]CategoryTotal, error)
+	// Categories возвращает различные категории расходов за интервал дат (включительно, дни UTC),
+	// по возрастанию, не nil.
+	Categories(ctx context.Context, from, to time.Time) ([]string, error)
+	// SumByCategoryBetween возвращает сумму расходов категории за интервал дат (включительно, дни UTC),
+	// 0 если расходов нет.
+	SumByCategoryBetween(ctx context.Context, category string, from, to time.Time) (Money, error)
 }
 
 // Repos - набор репозиториев, привязанных к одному контексту хранения (пулу или транзакции).

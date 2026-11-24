@@ -21,7 +21,7 @@ go run .
 ```
 
 Подключение настраивается переменными `DATABASE_URL` (или `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`) и
-`REDIS_ADDR`, `REDIS_DB`, `REDIS_PASSWORD`. Если PostgreSQL или Redis недоступны, сервис завершается с понятной ошибкой.
+`REDIS_ADDR`, `REDIS_DB`, `REDIS_PASSWORD`; таймаут запроса - `REQUEST_TIMEOUT` (по умолчанию `2s`, см. ниже). Если PostgreSQL или Redis недоступны, сервис завершается с понятной ошибкой.
 Откатить миграции: `goose -dir ./ledger/migrations postgres "$DATABASE_URL" down`.
 
 ## Как gateway получает сервис
@@ -30,17 +30,27 @@ go run .
 svc, closeFn, err := ledger.New(ctx)   // подключение к PostgreSQL и Redis, ctx доходит до Ping
 if err != nil { log.Fatalf(...) }
 defer closeFn()
-srv := &http.Server{Handler: api.NewRouter(svc)}
+srv := &http.Server{Handler: api.NewRouter(svc, api.WithTimeout(2*time.Second))}
 ```
 
-`api.NewRouter(svc)` создаёт `Handler` с полем `svc ledger.Service`, а пять обработчиков - его методы. В gateway нет импортов `database/sql`, pgx, Redis и
+`api.NewRouter(svc, opts...)` создаёт `Handler` с полем `svc ledger.Service`, а пять обработчиков - его методы. В gateway нет импортов `database/sql`, pgx, Redis и
 `ledger/internal/...` (последние Go запрещает для другого модуля); это проверяет `gateway/arch_test.go`. Типы `ledger.Transaction`, `ledger.Budget`,
 `ledger.ValidationError` и `ledger.ErrBudgetExceeded` - алиасы публичного пакета `ledger`. HTTP-контракт (коды ответов, формат `{"error":"..."}`, DTO) не менялся.
 
 ### Контекст и отмена
 
-В каждый вызов сервиса уходит контекст запроса `r.Context()` с таймаутом 5 секунд. Если клиент отключился, работа с БД отменяется и запрос завершается ответом 500.
-Раньше записи и списки шли с `context.Background()` и таймаутом 5 секунд, а отчёт - с контекстом запроса без таймаута. Теперь семантика единая; это нужно для HW9.
+В каждый вызов сервиса уходит контекст запроса `r.Context()` с дедлайном от middleware `Timeout`. Если клиент отключился или время вышло, работа с БД отменяется
+и запрос завершается ответом 504. Раньше записи и списки шли с `context.Background()` и таймаутом 5 секунд, а в HW8 таймаут 5 секунд стоял в каждом handler;
+теперь единственный источник дедлайна - middleware. Ошибки сервиса превращает в HTTP-ответ один хелпер `writeServiceError` (`respond.go`):
+`ErrBudgetExceeded` - 409, `*ValidationError` - 400, `context.DeadlineExceeded`/`context.Canceled` (и просроченный контекст запроса) - 504, остальное - 500.
+
+## Таймауты запросов
+
+Middleware `Timeout(d)` оборачивает все маршруты, включая `/ping`, и ставит в контекст запроса дедлайн. По умолчанию `d` = 2 секунды (`api.DefaultRequestTimeout`).
+Меняется переменной окружения `REQUEST_TIMEOUT` (длительность Go: `50ms`, `2s`, `1m`): `REQUEST_TIMEOUT=50ms go run .`. Пустое значение - 2 секунды;
+неверное или `<= 0` - gateway не стартует и пишет причину в лог. При превышении таймаута или отключении клиента любой endpoint отвечает
+`504 Gateway Timeout` и `{"error":"request timeout"}`. Handler, который не смотрит в `ctx`, middleware не прервёт. Подробности и пример с `curl` -
+в [корневом README](../README.md#таймауты-запросов).
 
 ## Эндпоинты
 
@@ -54,7 +64,8 @@ srv := &http.Server{Handler: api.NewRouter(svc)}
 | `GET`  | `/api/reports/summary`  | Отчёт за интервал: `?from=YYYY-MM-DD&to=YYYY-MM-DD` | 200 |
 
 Ответ отчёта: `{"from":"2026-10-01","to":"2026-10-31","total":450.5,"categories":[{"category":"food","total":450.5}]}`.
-Нет параметра, неверный формат даты или `from` позже `to` — 400; ошибки хранилища — 500.
+Нет параметра, неверный формат даты или `from` позже `to` — 400; время вышло или запрос отменён — 504; ошибки хранилища — 500.
+Если отчёта нет в кеше, ledger считает его конкурентно (горутина на категорию, heartbeat в логе), см. [корневой README](../README.md#отчёт-по-категориям).
 
 ## Примеры cURL
 
@@ -76,5 +87,6 @@ go test ./... -cover
 ```
 
 Тесты gateway не требуют PostgreSQL и Redis. Большинство строит роутер на `ledger.NewInMemory()` (сервис на репозиториях в памяти), поэтому каждому тесту хватает
-своего экземпляра и глобального сброса нет. Отдельный fake-сервис (`fake_test.go`) проверяет, что ошибки сервиса превращаются в 500, 409 и 400 и что
-в сервис уходит контекст запроса с дедлайном не больше 5 секунд для всех пяти эндпоинтов.
+своего экземпляра и глобального сброса нет. Отдельный fake-сервис (`fake_test.go`) проверяет, что ошибки сервиса превращаются в 500, 409, 400 и 504 и что
+в сервис уходит контекст запроса с дедлайном не больше 2 секунд для всех пяти эндпоинтов. `middleware_test.go` проверяет `Timeout`: дедлайн в контексте,
+504 на каждом endpoint при медленном сервисе, отмену клиентом и отсутствие утечки горутин.

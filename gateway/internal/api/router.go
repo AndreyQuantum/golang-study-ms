@@ -2,16 +2,41 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
-func NewRouter(svc ledger.Service) http.Handler {
+// DefaultRequestTimeout - таймаут запроса, если он не задан через WithTimeout.
+const DefaultRequestTimeout = 2 * time.Second
+
+type routerConfig struct {
+	timeout time.Duration
+}
+
+// RouterOption настраивает NewRouter.
+type RouterOption func(*routerConfig)
+
+// WithTimeout задаёт таймаут запроса. d <= 0 игнорируется.
+func WithTimeout(d time.Duration) RouterOption {
+	return func(c *routerConfig) {
+		if d > 0 {
+			c.timeout = d
+		}
+	}
+}
+
+func NewRouter(svc ledger.Service, opts ...RouterOption) http.Handler {
+	cfg := routerConfig{timeout: DefaultRequestTimeout}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	h := NewHandler(svc)
 	r := chi.NewRouter()
-	r.Use(Logging, JSONContentType)
+	// Logging снаружи, чтобы в логе был итоговый статус (в том числе 504); Timeout покрывает /ping и все /api.
+	r.Use(Logging, JSONContentType, Timeout(cfg.timeout))
 
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")

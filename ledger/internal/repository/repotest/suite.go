@@ -182,6 +182,103 @@ func RunExpenseSuite(t *testing.T, newRepos Factory) {
 		assert.Equal(t, "food", got[0].Category)
 	})
 
+	t.Run("categories distinct sorted interval", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		ctx := context.Background()
+		for _, tx := range []domain.Transaction{
+			{Amount: 10, Category: "transport", Date: day(10, 10)},
+			{Amount: 10, Category: "food", Date: day(10, 1)},
+			{Amount: 20, Category: "food", Date: day(10, 5)},
+			{Amount: 99, Category: "health", Date: day(10, 11)},
+			{Amount: 99, Category: "health", Date: day(9, 30)},
+		} {
+			_, err := repos.Expenses.Add(ctx, tx)
+			require.NoError(t, err)
+		}
+		// границы включительные: расходы в день from и в день to входят в отчёт
+		got, err := repos.Expenses.Categories(ctx, day(10, 1), day(10, 10))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"food", "transport"}, got)
+	})
+
+	t.Run("categories empty not nil", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		got, err := repos.Expenses.Categories(context.Background(), day(10, 1), day(10, 31))
+		require.NoError(t, err)
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("sum between", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		ctx := context.Background()
+		for _, tx := range []domain.Transaction{
+			{Amount: 100.10, Category: "food", Date: day(10, 1)},
+			{Amount: 50.20, Category: "food", Date: day(10, 10)},
+			{Amount: 999, Category: "food", Date: day(9, 30)},
+			{Amount: 30, Category: "transport", Date: day(10, 5)},
+		} {
+			_, err := repos.Expenses.Add(ctx, tx)
+			require.NoError(t, err)
+		}
+		sum, err := repos.Expenses.SumByCategoryBetween(ctx, "food", day(10, 1), day(10, 10))
+		require.NoError(t, err)
+		assert.Equal(t, domain.Money(15030), sum)
+
+		sum, err = repos.Expenses.SumByCategoryBetween(ctx, "nope", day(10, 1), day(10, 10))
+		require.NoError(t, err)
+		assert.Equal(t, domain.Money(0), sum)
+	})
+
+	t.Run("sum between ignores time of day", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		ctx := context.Background()
+		late := time.Date(2026, 10, 10, 23, 30, 0, 0, time.FixedZone("MSK", 3*3600)) // 20:30 UTC того же дня
+		_, err := repos.Expenses.Add(ctx, domain.Transaction{Amount: 7, Category: "food", Date: late})
+		require.NoError(t, err)
+
+		from, to := day(10, 10).Add(7*time.Hour), day(10, 10).Add(20*time.Hour)
+		sum, err := repos.Expenses.SumByCategoryBetween(ctx, "food", from, to)
+		require.NoError(t, err)
+		assert.Equal(t, domain.Money(700), sum)
+
+		totals, err := repos.Expenses.TotalsByCategory(ctx, from, to)
+		require.NoError(t, err)
+		require.Len(t, totals, 1)
+		assert.Equal(t, domain.MoneyFromFloat(totals[0].Total), sum)
+	})
+
+	t.Run("sum between equals totals", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		ctx := context.Background()
+		for _, tx := range []domain.Transaction{
+			{Amount: 0.1, Category: "food", Date: day(10, 1)},
+			{Amount: 0.2, Category: "food", Date: day(10, 2)},
+			{Amount: 12.34, Category: "transport", Date: day(10, 3)},
+			{Amount: 5, Category: "health", Date: day(10, 4)},
+		} {
+			_, err := repos.Expenses.Add(ctx, tx)
+			require.NoError(t, err)
+		}
+		totals, err := repos.Expenses.TotalsByCategory(ctx, day(10, 1), day(10, 31))
+		require.NoError(t, err)
+		require.Len(t, totals, 3)
+		for _, c := range totals {
+			sum, err := repos.Expenses.SumByCategoryBetween(ctx, c.Category, day(10, 1), day(10, 31))
+			require.NoError(t, err)
+			assert.Equal(t, domain.MoneyFromFloat(c.Total), sum, c.Category)
+		}
+	})
+
+	t.Run("report queries canceled context", func(t *testing.T) {
+		repos, _ := newRepos(t)
+		ctx := canceled()
+		_, err := repos.Expenses.Categories(ctx, day(10, 1), day(10, 2))
+		assert.ErrorIs(t, err, context.Canceled)
+		_, err = repos.Expenses.SumByCategoryBetween(ctx, "x", day(10, 1), day(10, 2))
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
 	t.Run("canceled context", func(t *testing.T) {
 		repos, _ := newRepos(t)
 		ctx := canceled()

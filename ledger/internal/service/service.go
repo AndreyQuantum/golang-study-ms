@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
@@ -25,10 +26,25 @@ type Service interface {
 type service struct {
 	repos domain.Repos
 	tx    domain.TxManager
+
+	heartbeat  time.Duration                    // период строк heartbeat при расчёте отчёта
+	logf       func(format string, args ...any) // куда писать heartbeat и сообщения об отмене
+	maxWorkers int                              // сколько категорий отчёта считается одновременно
 }
 
-func New(repos domain.Repos, tx domain.TxManager) Service {
-	return &service{repos: repos, tx: tx}
+// New создаёт сервис. Опции нужны тестам (интервал heartbeat, лог, число воркеров); без них берутся значения по умолчанию.
+func New(repos domain.Repos, tx domain.TxManager, opts ...Option) Service {
+	s := &service{
+		repos:      repos,
+		tx:         tx,
+		heartbeat:  defaultHeartbeat,
+		logf:       log.Printf,
+		maxWorkers: defaultMaxWorkers,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *service) SetBudget(ctx context.Context, b domain.Budget) error {
@@ -82,31 +98,6 @@ func (s *service) AddTransaction(ctx context.Context, t domain.Transaction) (dom
 
 func (s *service) ListTransactions(ctx context.Context) ([]domain.Transaction, error) {
 	return s.repos.Expenses.List(ctx)
-}
-
-func (s *service) GetReportSummary(ctx context.Context, from, to time.Time) (domain.ReportSummary, error) {
-	if err := validateInterval(from, to); err != nil {
-		return domain.ReportSummary{}, err
-	}
-	from, to = dayUTC(from), dayUTC(to)
-	totals, err := s.repos.Expenses.TotalsByCategory(ctx, from, to)
-	if err != nil {
-		return domain.ReportSummary{}, err
-	}
-
-	report := domain.ReportSummary{
-		From:       from.Format(dateLayout),
-		To:         to.Format(dateLayout),
-		Categories: make([]domain.CategoryTotal, 0, len(totals)),
-	}
-	var total domain.Money
-	for _, c := range totals {
-		cents := domain.MoneyFromFloat(c.Total)
-		report.Categories = append(report.Categories, domain.CategoryTotal{Category: c.Category, Total: cents.Float()})
-		total += cents
-	}
-	report.Total = total.Float()
-	return report, nil
 }
 
 // validateInterval проверяет границы отчёта; её вызывают и сервис, и кеш-декоратор до обращения к Redis.
