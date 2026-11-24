@@ -108,3 +108,22 @@ func NewReportSummaryResponse(r ledger.ReportSummary) ReportSummaryResponse {
 	}
 	return ReportSummaryResponse{From: r.From, To: r.To, Total: r.Total, Categories: categories}
 }
+
+// ImportItemError - отказ по одному элементу пакетного импорта; Index - позиция в исходном массиве запроса.
+type ImportItemError struct {
+	Index int    `json:"index"`
+	Error string `json:"error"`
+}
+
+// BulkImportResponse - ответ POST /api/transactions/bulk. Errors всегда массив, не null.
+type BulkImportResponse struct {
+	Accepted int               `json:"accepted"`
+	Rejected int               `json:"rejected"`
+	Errors   []ImportItemError `json:"errors"`
+}
+
+// BulkImportTimeoutResponse - тело 504 при таймауте или отмене: поле error общее с остальными ответами, плюс частичная сводка.
+type BulkImportTimeoutResponse struct {
+	Error string `json:"error"`
+	BulkImportResponse
+}
