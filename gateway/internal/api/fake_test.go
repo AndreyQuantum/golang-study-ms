@@ -23,9 +23,13 @@ type fakeService struct {
 	err  error
 	wait bool // блокироваться до отмены ctx и вернуть ctx.Err()
 
-	mu     sync.Mutex
-	calls  int
-	gotCtx context.Context
+	importSummary ledger.ImportSummary // что вернёт ImportTransactions (Errors nil превращается в пустой срез)
+
+	mu            sync.Mutex
+	calls         int
+	gotCtx        context.Context
+	importWorkers int
+	importInput   []ledger.Transaction
 }
 
 var _ ledger.Service = (*fakeService)(nil)
@@ -73,6 +77,24 @@ func (f *fakeService) ListTransactions(ctx context.Context) ([]ledger.Transactio
 
 func (f *fakeService) GetReportSummary(ctx context.Context, _, _ time.Time) (ledger.ReportSummary, error) {
 	return ledger.ReportSummary{}, f.record(ctx)
+}
+
+func (f *fakeService) ImportTransactions(ctx context.Context, txs []ledger.Transaction, workers int) (ledger.ImportSummary, error) {
+	f.mu.Lock()
+	f.importWorkers = workers
+	f.importInput = txs
+	summary := f.importSummary
+	f.mu.Unlock()
+	if summary.Errors == nil {
+		summary.Errors = []ledger.ImportError{}
+	}
+	return summary, f.record(ctx)
+}
+
+func (f *fakeService) lastImport() (int, []ledger.Transaction) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.importWorkers, f.importInput
 }
 
 type endpoint struct {
