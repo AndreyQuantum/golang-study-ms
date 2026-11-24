@@ -142,6 +142,9 @@ func TestRequestContextReachesService(t *testing.T) {
 
 			require.Equal(t, 1, svc.callCount())
 			assert.Equal(t, "marker", svc.lastCtx().Value(ctxKey{}), "в сервис должен уходить контекст запроса")
+			deadline, ok := svc.lastCtx().Deadline()
+			require.True(t, ok, "у вызова сервиса должен быть таймаут")
+			assert.LessOrEqual(t, time.Until(deadline), DefaultRequestTimeout)
 		})
 	}
 }
