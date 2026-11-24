@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -11,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/db"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/testdb"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
 )
 
@@ -20,17 +19,11 @@ func day(m time.Month, d int) time.Time {
 	return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC)
 }
 
+func TestMain(m *testing.M) { testdb.Main(m) }
+
 func newStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("LEDGER_TEST_DATABASE_URL is not set")
-	}
-	pool, err := db.Open(context.Background(), dsn)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = pool.Close() })
-	_, err = pool.Exec(`TRUNCATE budgets, expenses RESTART IDENTITY`)
-	require.NoError(t, err)
+	pool := testdb.Open(t)
 	return New(pool), pool
 }
 
