@@ -153,3 +153,17 @@ func TestListOrderDateDescIDDesc(t *testing.T) {
 	assert.Equal(t, time.UTC, got[0].Date.Location())
 	assert.Equal(t, 3.0, got[0].Amount)
 }
+
+// TestReportQueriesExpiredContext проверяет, что обёртки ошибок сохраняют причину (errors.Is работает).
+// Обрыв уже запущенного запроса проверяет TestReportQueriesCancelMidQuery.
+func TestReportQueriesExpiredContext(t *testing.T) {
+	s, _ := newStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+
+	_, err := s.Repos().Expenses.Categories(ctx, day(10, 1), day(10, 31))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	_, err = s.Repos().Expenses.SumByCategoryBetween(ctx, "food", day(10, 1), day(10, 31))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}

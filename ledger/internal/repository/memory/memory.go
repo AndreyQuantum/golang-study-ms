@@ -162,3 +162,41 @@ func (r *expenseRepo) TotalsByCategory(ctx context.Context, from, to time.Time) 
 	}
 	return result, nil
 }
+
+func (r *expenseRepo) Categories(ctx context.Context, from, to time.Time) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	from, to = dayUTC(from), dayUTC(to)
+	defer r.s.lock(r.locked)()
+	set := map[string]struct{}{}
+	for _, t := range r.s.expenses {
+		day := dayUTC(t.Date)
+		if day.Before(from) || day.After(to) {
+			continue
+		}
+		set[t.Category] = struct{}{}
+	}
+	result := slices.Sorted(maps.Keys(set))
+	if result == nil {
+		result = []string{}
+	}
+	return result, nil
+}
+
+func (r *expenseRepo) SumByCategoryBetween(ctx context.Context, category string, from, to time.Time) (domain.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	from, to = dayUTC(from), dayUTC(to)
+	defer r.s.lock(r.locked)()
+	var sum domain.Money
+	for _, t := range r.s.expenses {
+		day := dayUTC(t.Date)
+		if t.Category != category || day.Before(from) || day.After(to) {
+			continue
+		}
+		sum += domain.MoneyFromFloat(t.Amount)
+	}
+	return sum, nil
+}

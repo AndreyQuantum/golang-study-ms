@@ -120,3 +120,13 @@ func (r *spyExpenses) TotalsByCategory(ctx context.Context, from, to time.Time) 
 	r.s.record("Expenses.TotalsByCategory")
 	return r.inner.TotalsByCategory(ctx, from, to)
 }
+
+func (r *spyExpenses) Categories(ctx context.Context, from, to time.Time) ([]string, error) {
+	r.s.record("Expenses.Categories")
+	return r.inner.Categories(ctx, from, to)
+}
+
+func (r *spyExpenses) SumByCategoryBetween(ctx context.Context, c string, from, to time.Time) (domain.Money, error) {
+	r.s.record("Expenses.SumByCategoryBetween")
+	return r.inner.SumByCategoryBetween(ctx, c, from, to)
+}

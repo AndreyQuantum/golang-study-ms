@@ -90,3 +90,37 @@ func (r *expenseRepo) TotalsByCategory(ctx context.Context, from, to time.Time) 
 	}
 	return result, nil
 }
+
+func (r *expenseRepo) Categories(ctx context.Context, from, to time.Time) ([]string, error) {
+	rows, err := r.q.QueryContext(ctx,
+		`SELECT DISTINCT category FROM expenses WHERE date BETWEEN $1 AND $2 ORDER BY category`,
+		dayUTC(from), dayUTC(to))
+	if err != nil {
+		return nil, fmt.Errorf("report categories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := []string{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, fmt.Errorf("scan report category: %w", err)
+		}
+		result = append(result, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("report categories: %w", err)
+	}
+	return result, nil
+}
+
+func (r *expenseRepo) SumByCategoryBetween(ctx context.Context, category string, from, to time.Time) (domain.Money, error) {
+	var cents int64
+	err := r.q.QueryRowContext(ctx,
+		`SELECT (COALESCE(SUM(amount), 0) * 100)::bigint FROM expenses WHERE category = $1 AND date BETWEEN $2 AND $3`,
+		category, dayUTC(from), dayUTC(to)).Scan(&cents)
+	if err != nil {
+		return 0, fmt.Errorf("report sum %q: %w", category, err)
+	}
+	return domain.Money(cents), nil
+}
