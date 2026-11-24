@@ -221,7 +221,7 @@ curl -i "http://localhost:8080/api/reports/summary?from=2025-08-01&to=2025-08-31
 # {"error":"request timeout"}
 ```
 
-В логе при этом: `report: calculation aborted: context deadline exceeded`, `report: heartbeat stopped`, `GET /api/reports/summary 504 ...`.
+В логе при этом: `report: heartbeat stopped`, `report: calculation aborted: context deadline exceeded`, `GET /api/reports/summary 504 ...`.
 
 ## Тесты
 
