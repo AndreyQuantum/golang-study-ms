@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,4 +205,186 @@ func (f failingAdd) Add(ctx context.Context, t domain.Transaction) (domain.Trans
 		return domain.Transaction{}, errors.New("boom")
 	}
 	return f.ExpenseRepository.Add(ctx, t)
+}
+
+// blockingTx - domain.TxManager: первые pass вызовов WithinTx идут в memory, остальные сообщают в entered
+// и ждут отмены ctx, после чего возвращают ctx.Err(). Так отмена посреди импорта детерминирована, без sleep.
+type blockingTx struct {
+	inner   *memory.Store
+	pass    int32
+	entered chan struct{}
+	calls   atomic.Int32
+}
+
+func newBlockingTx(pass int) *blockingTx {
+	return &blockingTx{inner: memory.New(), pass: int32(pass), entered: make(chan struct{}, domain.MaxImportItems)}
+}
+
+func (b *blockingTx) service() Service { return New(b.inner.Repos(), b) }
+
+func (b *blockingTx) WithinTx(ctx context.Context, fn func(context.Context, domain.Repos) error) error {
+	if b.calls.Add(1) <= b.pass {
+		return b.inner.WithinTx(ctx, fn)
+	}
+	b.entered <- struct{}{}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (b *blockingTx) waitEntered(t *testing.T, n int) {
+	t.Helper()
+	for range n {
+		select {
+		case <-b.entered:
+		case <-time.After(guard):
+			t.Fatal("воркеры не дошли до хранилища")
+		}
+	}
+}
+
+// runImport запускает импорт в горутине и ждёт результат не дольше guard.
+func runImport(t *testing.T, svc Service, ctx context.Context, txs []domain.Transaction, workers int) (domain.ImportSummary, error) {
+	t.Helper()
+	type res struct {
+		s   domain.ImportSummary
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		s, err := svc.ImportTransactions(ctx, txs, workers)
+		ch <- res{s, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.s, r.err
+	case <-time.After(guard):
+		t.Fatal("ImportTransactions не вернулся после отмены")
+		return domain.ImportSummary{}, nil
+	}
+}
+
+func TestImportCancelMidImport(t *testing.T) {
+	cases := []struct {
+		name   string
+		cause  error
+		newCtx func() (context.Context, func())
+		wait   bool // ждать ли сигналов entered перед cancel
+	}{
+		{"canceled", context.Canceled, func() (context.Context, func()) {
+			return context.WithCancel(context.Background())
+		}, true},
+		{"deadline", context.DeadlineExceeded, func() (context.Context, func()) {
+			return context.WithTimeout(context.Background(), 20*time.Millisecond)
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bt := newBlockingTx(0)
+			ctx, cancel := tc.newCtx()
+			defer cancel()
+			done := make(chan struct{})
+			var summary domain.ImportSummary
+			var err error
+			go func() {
+				defer close(done)
+				summary, err = runImport(t, bt.service(), ctx, importTxs(10, "food", 1), 2)
+			}()
+			if tc.wait {
+				bt.waitEntered(t, 2)
+				cancel()
+			}
+			<-done
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tc.cause)
+			assert.Zero(t, summary.Accepted+summary.Rejected, "прерванные элементы не считаются")
+			assert.NotNil(t, summary.Errors)
+			assert.EqualValues(t, 2, bt.calls.Load(), "воркеры не берут новые задания после отмены")
+		})
+	}
+}
+
+func TestImportCancelPartialSummary(t *testing.T) {
+	bt := newBlockingTx(3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	var summary domain.ImportSummary
+	var err error
+	go func() {
+		defer close(done)
+		summary, err = runImport(t, bt.service(), ctx, importTxs(10, "food", 1), 1)
+	}()
+	bt.waitEntered(t, 1) // четвёртый элемент заблокирован
+	cancel()
+	<-done
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 3, summary.Accepted)
+	assert.Zero(t, summary.Rejected)
+	assert.Empty(t, summary.Errors)
+	assert.NotNil(t, summary.Errors)
+	stored, lerr := bt.inner.Repos().Expenses.List(context.Background())
+	require.NoError(t, lerr)
+	assert.Len(t, stored, 3)
+}
+
+func TestImportProducerStopsOnCancel(t *testing.T) {
+	bt := newBlockingTx(0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		_, err = runImport(t, bt.service(), ctx, importTxs(1000, "food", 1), 1)
+	}()
+	bt.waitEntered(t, 1)
+	cancel()
+	<-done
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.EqualValues(t, 1, bt.calls.Load())
+}
+
+// Тест без t.Parallel(): сравнивает число горутин процесса до и после.
+func TestImportNoGoroutineLeak(t *testing.T) {
+	scenarios := map[string]func(t *testing.T){
+		"success": func(t *testing.T) {
+			_, err := newService().ImportTransactions(context.Background(), importTxs(50, "food", 1), 8)
+			require.NoError(t, err)
+		},
+		"cancel mid import": func(t *testing.T) {
+			bt := newBlockingTx(2)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_, _ = bt.service().ImportTransactions(ctx, importTxs(100, "food", 1), 4)
+			}()
+			bt.waitEntered(t, 2)
+			cancel()
+			<-done
+		},
+		"empty": func(t *testing.T) {
+			_, err := newService().ImportTransactions(context.Background(), nil, 4)
+			require.NoError(t, err)
+		},
+		"bad arguments": func(t *testing.T) {
+			_, err := newService().ImportTransactions(context.Background(), importTxs(1, "food", 1), 0)
+			require.Error(t, err)
+		},
+	}
+	for name, run := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			before := runtime.NumGoroutine()
+			run(t)
+			deadline := time.Now().Add(guard)
+			for runtime.NumGoroutine() > before {
+				if time.Now().After(deadline) {
+					t.Fatalf("утечка горутин: было %d, стало %d", before, runtime.NumGoroutine())
+				}
+				runtime.Gosched()
+			}
+		})
+	}
 }
