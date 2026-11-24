@@ -1,6 +1,6 @@
 # Gateway
 
-HTTP-шлюз (chi) поверх пакета `ledger`. Эндпоинты те же, что раньше, но данные теперь хранятся в PostgreSQL, а отчёты кешируются в Redis на 30 секунд.
+HTTP-шлюз (chi) поверх пакета `ledger`. Эндпоинты те же, что раньше: данные хранятся в PostgreSQL, отчёты кешируются в Redis на 30 секунд. Gateway работает только с интерфейсом `ledger.Service` и ничего не знает про базы данных.
 
 ## Запуск
 
@@ -23,6 +23,24 @@ go run .
 Подключение настраивается переменными `DATABASE_URL` (или `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`) и
 `REDIS_ADDR`, `REDIS_DB`, `REDIS_PASSWORD`. Если PostgreSQL или Redis недоступны, сервис завершается с понятной ошибкой.
 Откатить миграции: `goose -dir ./ledger/migrations postgres "$DATABASE_URL" down`.
+
+## Как gateway получает сервис
+
+```go
+svc, closeFn, err := ledger.New(ctx)   // подключение к PostgreSQL и Redis, ctx доходит до Ping
+if err != nil { log.Fatalf(...) }
+defer closeFn()
+srv := &http.Server{Handler: api.NewRouter(svc)}
+```
+
+`api.NewRouter(svc)` создаёт `Handler` с полем `svc ledger.Service`, а пять обработчиков - его методы. В gateway нет импортов `database/sql`, pgx, Redis и
+`ledger/internal/...` (последние Go запрещает для другого модуля); это проверяет `gateway/arch_test.go`. Типы `ledger.Transaction`, `ledger.Budget`,
+`ledger.ValidationError` и `ledger.ErrBudgetExceeded` - алиасы публичного пакета `ledger`. HTTP-контракт (коды ответов, формат `{"error":"..."}`, DTO) не менялся.
+
+### Контекст и отмена
+
+В каждый вызов сервиса уходит контекст запроса `r.Context()` с таймаутом 5 секунд. Если клиент отключился, работа с БД отменяется и запрос завершается ответом 500.
+Раньше записи и списки шли с `context.Background()` и таймаутом 5 секунд, а отчёт - с контекстом запроса без таймаута. Теперь семантика единая; это нужно для HW9.
 
 ## Эндпоинты
 
@@ -57,4 +75,6 @@ cd gateway
 go test ./... -cover
 ```
 
-Тесты gateway работают на хранилище в памяти и не требуют PostgreSQL и Redis.
+Тесты gateway не требуют PostgreSQL и Redis. Большинство строит роутер на `ledger.NewInMemory()` (сервис на репозиториях в памяти), поэтому каждому тесту хватает
+своего экземпляра и глобального сброса нет. Отдельный fake-сервис (`fake_test.go`) проверяет, что ошибки сервиса превращаются в 500, 409 и 400 и что
+в сервис уходит контекст запроса с дедлайном не больше 5 секунд для всех пяти эндпоинтов.

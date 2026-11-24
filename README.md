@@ -4,8 +4,8 @@
 
 | Сервис    | Описание |
 |-----------|----------|
-| `gateway` | HTTP-шлюз на chi: REST API для транзакций, бюджетов и отчётов. Вызывает функции пакета `ledger`. |
-| `ledger`  | Учёт транзакций и бюджетов по категориям с проверкой лимитов. Данные хранятся в PostgreSQL, отчёты и список бюджетов кешируются в Redis. |
+| `gateway` | HTTP-шлюз на chi: REST API для транзакций, бюджетов и отчётов. Работает с интерфейсом `ledger.Service` и ничего не знает про PostgreSQL и Redis. |
+| `ledger`  | Учёт транзакций и бюджетов по категориям с проверкой лимитов. Слои domain, repository, service и app; данные хранятся в PostgreSQL, отчёты и список бюджетов кешируются в Redis. |
 
 Каждый сервис — отдельный Go-модуль. `gateway` подключает `ledger` через `replace => ../ledger` в `gateway/go.mod`, `go.work` не нужен.
 Подробности по сервисам: [ledger/README.md](ledger/README.md), [gateway/README.md](gateway/README.md).
@@ -13,20 +13,33 @@
 ## Структура
 
 ```
-docker-compose.yml        PostgreSQL 17 и Redis 7
+docker-compose.yml           PostgreSQL 17 и Redis 7
 ledger/
-  ledger.go, store.go     фасад: Init, Close, AddTransaction, ListTransactions, SetBudget, ListBudgets, GetReportSummary, CheckValid, Reset
-  entity/                 Transaction, Budget, ReportSummary, интерфейс Validatable, ValidationError
-  repository/             хранилище в памяти (unit-тесты и режим без Init)
-  internal/db/            подключение к PostgreSQL (pgx), DSN из окружения, пул соединений
-  internal/cache/         Redis-клиент (go-redis v9), JSON с TTL
-  internal/postgres/      хранилище на PostgreSQL
-  migrations/             миграции goose
-  cmd/ledger/             демо-программа
+  ledger.go                  публичная точка входа: алиасы типов, Service, New, NewInMemory, CheckValid, ErrBudgetExceeded
+  internal/domain/           сущности и валидация, Money, ошибки, интерфейсы репозиториев и TxManager, ParseBudgets
+  internal/repository/memory/  репозитории в памяти (юнит-тесты, режим без БД)
+  internal/repository/pg/    репозитории PostgreSQL: только SQL, транзакция и FOR UPDATE
+  internal/repository/repotest/  общий контракт-тест репозиториев для memory и pg
+  internal/service/          интерфейс Service, бизнес-логика (правило бюджета, отчёт), кеш-декоратор
+  internal/app/              фабрика New(ctx) и NewInMemory(): окружение, подключение, сборка
+  internal/db/               подключение к PostgreSQL (pgx), DSN из окружения, пул соединений
+  internal/cache/            Redis-клиент (go-redis v9), JSON с TTL
+  internal/testdb/           хелперы интеграционных тестов (используются только из _test.go)
+  migrations/                миграции goose
+  cmd/ledger/                демо-программа
 gateway/
-  main.go                 HTTP-сервер на :8080, graceful shutdown
-  internal/api/           роутер, обработчики, DTO, middleware
+  main.go                    HTTP-сервер на :8080, graceful shutdown; сервис берёт из ledger.New
+  internal/api/              роутер, Handler поверх ledger.Service, DTO, middleware
 ```
+
+Зависимости направлены внутрь: `gateway` -> `ledger` (публичный пакет) -> `app` -> `service` -> `domain` <- `repository/*`.
+`domain` и `service` не знают про базы данных, `repository/*` не знают про сервис, а про подключение к PostgreSQL и Redis знает только `app`.
+Это проверяют arch-тесты (`ledger/arch_test.go`, `gateway/arch_test.go`).
+
+Gateway - отдельный модуль и не может импортировать `ledger/internal/...` (правило Go для каталогов `internal`). Поэтому корневой пакет
+`ledger` - тонкая публичная обёртка: он выводит наружу нужные типы алиасами (`ledger.Service = service.Service`,
+`ledger.Transaction = domain.Transaction`, ...) и фабрику `ledger.New`. Алиасы дают те же типы, поэтому `errors.Is(err, ledger.ErrBudgetExceeded)`
+и `errors.As` работают в gateway как раньше.
 
 ## Требования
 
@@ -84,8 +97,9 @@ gateway/
 | `REDIS_DB`       | `0`              | номер базы Redis |
 | `REDIS_PASSWORD` | пусто            | пароль Redis |
 
-Ledger и gateway при старте вызывают `ledger.Init`: подключаются к PostgreSQL и Redis и пишут в лог `connected to PostgreSQL (...)` и
-`connected to Redis (...)`. Если подключиться не удалось, процесс завершается с понятной ошибкой.
+Ledger и gateway при старте вызывают фабрику `ledger.New(ctx)`: она подключается к PostgreSQL и Redis, пишет в лог `connected to PostgreSQL (...)` и
+`connected to Redis (...)` и возвращает сервис и `closeFn` для закрытия соединений. Если подключиться не удалось, процесс завершается с понятной ошибкой.
+Миграции фабрика не запускает: схему применяют отдельно через `goose up`.
 
 ## API
 
@@ -114,6 +128,10 @@ Ledger и gateway при старте вызывают `ledger.Init`: подкл
 | 500 | внутренняя ошибка: `{"error":"internal server error"}` |
 
 Транзакция в категории без бюджета добавляется без ограничений.
+
+Контекст запроса `r.Context()` с таймаутом 5 секунд передаётся во все методы сервиса: если клиент отключился или время вышло, работа с БД
+отменяется и запрос завершается ответом 500. В HW7 записи и списки шли с `context.Background()` и таймаутом 5 секунд, а отчёт - с контекстом запроса
+без таймаута. Теперь семантика единая; это нужно для HW9.
 
 ### Примеры cURL
 
@@ -149,8 +167,9 @@ curl "http://localhost:8080/api/reports/summary?from=2025-09-01&to=2025-09-30"
 
 ## Тесты
 
-Тесты написаны на `testing` и `github.com/stretchr/testify`. Unit-тесты и тесты HTTP работают на хранилище в памяти и не требуют
-PostgreSQL и Redis. Тесты, которые меняют состояние фасада, вызывают `ledger.Reset()` в начале и в `t.Cleanup`.
+Тесты написаны на `testing` и `github.com/stretchr/testify`. Юнит-тесты сервиса и тесты HTTP работают на репозиториях в памяти
+(`ledger.NewInMemory()`) и не требуют PostgreSQL и Redis; глобального состояния нет, поэтому каждому тесту хватает своего экземпляра сервиса.
+В gateway есть и fake-реализация `ledger.Service`: на ней проверяются ошибки сервиса и передача контекста запроса.
 
 ```sh
 cd ledger
@@ -164,32 +183,39 @@ go tool cover -html=cover.out -o cover.html
 
 `cover.out` и `cover.html` лежат в `.gitignore`.
 
-Интеграционные тесты `ledger/internal/postgres` пропускаются, пока не задана `LEDGER_TEST_DATABASE_URL`. Перед каждым тестом они очищают
-таблицы, поэтому им нужна отдельная база с применёнными миграциями:
+Интеграционные тесты `ledger/internal/repository/pg` и `ledger/internal/app` пропускаются, пока не задана `LEDGER_TEST_DATABASE_URL`. Перед каждым тестом они очищают
+таблицы, поэтому им нужна отдельная база с применёнными миграциями. Пакеты с БД-тестами берут блокировку (`pg_advisory_lock`) на весь свой прогон
+(`internal/testdb`), поэтому `go test ./...` не гоняет их параллельно друг с другом:
 
 ```sh
 docker compose exec postgres createdb -U postgres cashapp_test
 goose -dir ./ledger/migrations postgres "postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" up
 cd ledger
-LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" go test ./internal/postgres -cover
+LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" go test ./internal/repository/pg ./internal/app -cover
 ```
 
-Покрытие тестами:
+Для `app` Redis поднимается внутри теста (`miniredis`), отдельный сервер не нужен. Тест `TestConcurrentAddRespectsLimit` запускает 10 параллельных
+транзакций на лимит 100 и проверяет, что принято ровно три и сумма не превысила 90.
 
-| Модуль / пакет                  | Покрытие |
-|---------------------------------|----------|
-| `ledger`, итог по модулю        | 53.7%    |
-| `ledger` (фасад)                | 78.9%    |
-| `ledger/entity`                 | 100.0%   |
-| `ledger/repository`             | 98.3%    |
-| `ledger/internal/cache`         | 97.2%    |
-| `ledger/internal/db`            | 93.9%    |
-| `ledger/internal/postgres`      | 83.1% с `LEDGER_TEST_DATABASE_URL`, без нее тесты пропускаются |
-| `gateway`, итог по модулю       | 74.7%    |
-| `gateway/internal/api`          | 88.5%    |
+Покрытие тестами (с `LEDGER_TEST_DATABASE_URL`):
 
-Итог по модулям ниже, чем по пакетам, потому что в него входят `main`-пакеты без тестов (`ledger/cmd/ledger`, `gateway/main.go`)
-и пропущенные без базы интеграционные тесты. `Init` и `Close` в фасаде тестами не покрыты: им нужны работающие PostgreSQL и Redis.
+| Модуль / пакет                         | Покрытие |
+|----------------------------------------|----------|
+| `ledger`, итог по модулю               | 63.7%    |
+| `ledger` (публичный пакет)             | 100.0%   |
+| `ledger/internal/domain`               | 97.0%    |
+| `ledger/internal/service`              | 94.2%    |
+| `ledger/internal/repository/memory`    | 98.5%    |
+| `ledger/internal/repository/pg`        | 91.0% с `LEDGER_TEST_DATABASE_URL`, без нее тесты пропускаются |
+| `ledger/internal/app`                  | 100.0% с `LEDGER_TEST_DATABASE_URL`, без нее 24.0% |
+| `ledger/internal/cache`                | 97.2%    |
+| `ledger/internal/db`                   | 93.9%    |
+| `ledger/cmd/ledger`                    | 61.4%    |
+| `gateway`, итог по модулю              | 83.0%    |
+| `gateway/internal/api`                 | 99.3%    |
+
+Итог по модулю ниже, чем по пакетам, потому что в него входят `main`-пакеты (`ledger/cmd/ledger`, `gateway/main.go`), у которых тестами покрыты
+только вспомогательные функции, и `internal/testdb` с общим тестовым кодом.
 
 ## Домашние задания
 
@@ -200,3 +226,4 @@ LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_te
 | 5  | HTTP-слой gateway: DTO, маршруты `/api`, коды 400/409/500, middleware логирования и `Content-Type` |
 | 6  | unit-тесты домена и тесты HTTP через `httptest`, `ledger.Reset()`, покрытие |
 | 7  | PostgreSQL и миграции goose, кеш Redis для отчёта и списка бюджетов, эндпоинт `/api/reports/summary` |
+| 8  | чистая архитектура: domain, repository, service, app; интерфейсы репозиториев и `ledger.Service`, фабрика `ledger.New`, gateway работает через интерфейс сервиса |
