@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -10,7 +9,7 @@ import (
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
-var ErrBudgetExceeded = errors.New("budget exceeded")
+var ErrBudgetExceeded = domain.ErrBudgetExceeded
 
 type TransactionRepository struct {
 	mu           sync.RWMutex

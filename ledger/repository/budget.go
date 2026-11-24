@@ -1,8 +1,6 @@
 package repository
 
 import (
-	"encoding/json"
-	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -50,20 +48,7 @@ func (r *BudgetRepository) ListBudgets() []domain.Budget {
 }
 
 func ParseBudgets(rd io.Reader) ([]domain.Budget, error) {
-	dec := json.NewDecoder(rd)
-	dec.DisallowUnknownFields()
-
-	var budgets []domain.Budget
-	if err := dec.Decode(&budgets); err != nil {
-		return nil, fmt.Errorf("parse budgets json: %w", err)
-	}
-
-	for i, b := range budgets {
-		if err := b.Validate(); err != nil {
-			return nil, fmt.Errorf("budget #%d: %w", i, err)
-		}
-	}
-	return budgets, nil
+	return domain.ParseBudgets(rd)
 }
 
 func (r *BudgetRepository) LoadBudgets(rd io.Reader) error {
