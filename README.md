@@ -16,11 +16,11 @@
 docker-compose.yml           PostgreSQL 17 и Redis 7
 ledger/
   ledger.go                  публичная точка входа: алиасы типов, Service, New, NewInMemory, CheckValid, ErrBudgetExceeded
-  internal/domain/           сущности и валидация, Money, ошибки, интерфейсы репозиториев и TxManager, ParseBudgets
+  internal/domain/           сущности и валидация, Money, ошибки, интерфейсы репозиториев и TxManager, ParseBudgets, ImportSummary и лимиты импорта (import.go)
   internal/repository/memory/  репозитории в памяти (юнит-тесты, режим без БД)
   internal/repository/pg/    репозитории PostgreSQL: только SQL, транзакция и FOR UPDATE
   internal/repository/repotest/  общий контракт-тест репозиториев для memory и pg
-  internal/service/          интерфейс Service, бизнес-логика (правило бюджета, конкурентный отчёт с heartbeat), кеш-декоратор
+  internal/service/          интерфейс Service, бизнес-логика (правило бюджета, конкурентный отчёт с heartbeat), кеш-декоратор, пакетный импорт пулом воркеров (import.go)
   internal/app/              фабрика New(ctx) и NewInMemory(): окружение, подключение, сборка
   internal/db/               подключение к PostgreSQL (pgx), DSN из окружения, пул соединений
   internal/cache/            Redis-клиент (go-redis v9), JSON с TTL
@@ -29,7 +29,8 @@ ledger/
   cmd/ledger/                демо-программа
 gateway/
   main.go                    HTTP-сервер на :8080, graceful shutdown; сервис берёт из ledger.New
-  internal/api/              роутер, Handler поверх ledger.Service, DTO, middleware (логирование, Content-Type, таймаут запроса)
+  internal/api/              роутер, Handler поверх ledger.Service, DTO, middleware (логирование, Content-Type, таймаут запроса),
+                             пакетный импорт POST /api/transactions/bulk (bulk.go)
 ```
 
 Зависимости направлены внутрь: `gateway` -> `ledger` (публичный пакет) -> `app` -> `service` -> `domain` <- `repository/*`.
@@ -110,6 +111,7 @@ Ledger и gateway при старте вызывают фабрику `ledger.Ne
 |--------|------------------------|----------|-------|
 | `GET`  | `/ping`                | `{"message":"pong"}` | 200 |
 | `POST` | `/api/transactions`    | добавить транзакцию | 201 |
+| `POST` | `/api/transactions/bulk` | пакетный импорт массива транзакций пулом воркеров, `?workers=` | 200 |
 | `GET`  | `/api/transactions`    | список транзакций, новые сверху; пустой список — `[]` | 200 |
 | `POST` | `/api/budgets`         | создать или обновить бюджет категории | 201 |
 | `GET`  | `/api/budgets`         | список бюджетов по категориям; пустой список — `[]` | 200 |
@@ -122,12 +124,12 @@ Ledger и gateway при старте вызывают фабрику `ledger.Ne
 
 | Код | Когда |
 |-----|-------|
-| 400 | некорректный JSON, неверный формат даты, ошибка валидации (`amount must be positive`, `category must not be empty`, ...), отчёт без `from`/`to` или с `from` позже `to` |
+| 400 | некорректный JSON, неверный формат даты, ошибка валидации (`amount must be positive`, `category must not be empty`, ...), отчёт без `from`/`to` или с `from` позже `to`, для `bulk` - не массив, больше 1000 элементов, неверный `workers` |
 | 404 | неизвестный путь |
 | 405 | метод не поддерживается для пути |
 | 409 | транзакция превышает бюджет категории: `{"error":"budget exceeded"}` |
 | 500 | внутренняя ошибка: `{"error":"internal server error"}` |
-| 504 | время обработки вышло или запрос отменён: `{"error":"request timeout"}` |
+| 504 | время обработки вышло или запрос отменён: `{"error":"request timeout"}`; у `bulk` в тело добавлена частичная сводка |
 
 Транзакция в категории без бюджета добавляется без ограничений.
 
@@ -167,6 +169,53 @@ curl "http://localhost:8080/api/reports/summary?from=2025-09-01&to=2025-09-30"
 Если Redis недоступен во время работы, ошибка пишется в лог, а запрос выполняется напрямую через PostgreSQL.
 
 Данные хранятся в PostgreSQL и переживают перезапуск ledger и gateway.
+
+### Пакетный импорт
+
+`POST /api/transactions/bulk` принимает JSON-массив тех же объектов, что и `POST /api/transactions`, и добавляет их пулом воркеров (HW10).
+Строгий разбор тот же: неизвестные поля, лишние данные после массива, пустое тело и тело больше 1 MiB дают 400. Не массив (объект, `null`)
+и больше 1000 элементов - тоже 400. Пустой массив `[]` допустим и даёт нулевую сводку.
+
+Параметр `?workers=N` - число воркеров: по умолчанию 4, допустимо от 1 до 32, иначе 400 `{"error":"workers must be an integer between 1 and 32"}`.
+
+Каждый элемент обрабатывается независимо и проходит тот же путь, что одиночная транзакция: валидация, правило бюджета и вставка в одной транзакции БД
+под блокировкой бюджета. Поэтому сколько бы воркеров ни работало, лимит категории не превышается. Пакет целиком не откатывается: принятые элементы остаются
+в базе, отказ одного элемента не мешает остальным. Порядок вставки при `workers > 1` не определён (при `workers=1` сохраняется исходный).
+
+Ответ 200 приходит и при частичных отказах:
+
+```json
+{"accepted":10,"rejected":2,"errors":[{"index":3,"error":"date must be in YYYY-MM-DD format"},{"index":11,"error":"budget exceeded"}]}
+```
+
+`index` - позиция элемента в исходном массиве запроса. Тексты ошибок те же, что у одиночного endpoint (`amount must be positive`, `budget exceeded`, ...);
+неожиданные ошибки хранилища наружу не отдаются (`internal error`), подробности пишутся в лог. `errors` всегда массив, при отсутствии отказов - `[]`.
+Элементы с неверной датой отклоняются в gateway и в ledger не отправляются, но индексы в ответе остаются исходными.
+
+Если время вышло (`REQUEST_TIMEOUT`) или клиент отключился, ответ 504 несёт частичную сводку: `{"error":"request timeout","accepted":N,"rejected":M,"errors":[...]}`.
+Необработанные и прерванные элементы не считаются ни принятыми, ни отклонёнными, а уже принятые остаются в базе. Для больших пакетов стоит поднять `REQUEST_TIMEOUT`
+(по умолчанию 2 секунды). Кеш отчёта не сбрасывается, как и после одиночной транзакции: отчёт может отставать до 30 секунд.
+
+```sh
+# бюджет 100 на food, пакет из 20 транзакций по 10 и 8 воркеров
+curl -X POST "http://localhost:8080/api/transactions/bulk?workers=8" -H "Content-Type: application/json" -d @batch.json
+# 200 {"accepted":10,"rejected":10,"errors":[{"index":10,"error":"budget exceeded"}, ...]}
+
+curl -X POST http://localhost:8080/api/transactions/bulk -H "Content-Type: application/json" \
+  -d '[{"amount":5,"category":"taxi","date":"2026-10-01"},{"amount":5,"category":"taxi","date":"01.10.2026"},{"amount":-3,"category":"taxi","date":"2026-10-01"}]'
+# 200 {"accepted":1,"rejected":2,"errors":[{"index":1,"error":"date must be in YYYY-MM-DD format"},{"index":2,"error":"amount must be positive"}]}
+
+curl -X POST "http://localhost:8080/api/transactions/bulk?workers=0" -H "Content-Type: application/json" -d '[]'
+# 400 {"error":"workers must be an integer between 1 and 32"}
+
+curl -X POST http://localhost:8080/api/transactions/bulk -H "Content-Type: application/json" -d '{"amount":1}'
+# 400 {"error":"request body must be a JSON array of transactions"}
+
+# gateway запущен с REQUEST_TIMEOUT=1ms
+# 504 {"error":"request timeout","accepted":0,"rejected":0,"errors":[]}
+```
+
+Устройство пула описано в [ledger/README.md](ledger/README.md#пакетный-импорт).
 
 ### Отчёт по категориям
 
@@ -254,24 +303,27 @@ LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_te
 ```
 
 Для `app` Redis поднимается внутри теста (`miniredis`), отдельный сервер не нужен. Тест `TestConcurrentAddRespectsLimit` запускает 10 параллельных
-транзакций на лимит 100 и проверяет, что принято ровно три и сумма не превысила 90.
+транзакций на лимит 100 и проверяет, что принято ровно три и сумма не превысила 90. Импорт проверяют `TestImportRespectsLimitOverPg` (20 по 10 на лимит 100
+с 8 воркерами: принято 10, отказано 10, в таблице ровно 100), юнит-тесты `service/import_test.go` (в том числе отмена посреди импорта на заглушке,
+которая блокируется до `ctx.Done()`, и проверка отсутствия утечки горутин) и `gateway/internal/api/bulk_test.go`. Все они входят в обычный `go test ./...`;
+под `-race` их удобно гонять в docker: `docker run --rm -v "$PWD:/src" -w /src/ledger -e CGO_ENABLED=1 golang:1.27 go test -race ./...`.
 
 Покрытие тестами (с `LEDGER_TEST_DATABASE_URL`):
 
 | Модуль / пакет                         | Покрытие |
 |----------------------------------------|----------|
-| `ledger`, итог по модулю               | 63.7%    |
+| `ledger`, итог по модулю               | 66.1%    |
 | `ledger` (публичный пакет)             | 100.0%   |
-| `ledger/internal/domain`               | 97.0%    |
-| `ledger/internal/service`              | 97.9%    |
+| `ledger/internal/domain`               | 97.1%    |
+| `ledger/internal/service`              | 98.5%    |
 | `ledger/internal/repository/memory`    | 98.9%    |
 | `ledger/internal/repository/pg`        | 90.7% с `LEDGER_TEST_DATABASE_URL`, без нее тесты пропускаются |
 | `ledger/internal/app`                  | 100.0% с `LEDGER_TEST_DATABASE_URL`, без нее 24.0% |
 | `ledger/internal/cache`                | 97.2%    |
 | `ledger/internal/db`                   | 97.0%    |
 | `ledger/cmd/ledger`                    | 61.4%    |
-| `gateway`, итог по модулю              | 82.0%    |
-| `gateway/internal/api`                 | 99.3%    |
+| `gateway`, итог по модулю              | 86.6%    |
+| `gateway/internal/api`                 | 99.5%    |
 
 Итог по модулю ниже, чем по пакетам, потому что в него входят `main`-пакеты (`ledger/cmd/ledger`, `gateway/main.go`), у которых тестами покрыты
 только вспомогательные функции, и `internal/testdb` с общим тестовым кодом.
@@ -287,3 +339,4 @@ LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_te
 | 7  | PostgreSQL и миграции goose, кеш Redis для отчёта и списка бюджетов, эндпоинт `/api/reports/summary` |
 | 8  | чистая архитектура: domain, repository, service, app; интерфейсы репозиториев и `ledger.Service`, фабрика `ledger.New`, gateway работает через интерфейс сервиса |
 | 9  | конкурентный отчёт по категориям (горутины, `sync.WaitGroup`, `ctx`), heartbeat на `time.Ticker`, middleware таймаута (504), `REQUEST_TIMEOUT` |
+| 10 | worker-pool пакетного импорта: каналы jobs/results, `sync.WaitGroup`, отдельный коллектор, счётчики на `atomic`, отмена по `ctx`, `POST /api/transactions/bulk` с частичной сводкой и 504 |

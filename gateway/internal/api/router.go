@@ -51,6 +51,7 @@ func NewRouter(svc ledger.Service, opts ...RouterOption) http.Handler {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/transactions", h.createTransaction)
+		r.Post("/transactions/bulk", h.bulkImport)
 		r.Get("/transactions", h.listTransactions)
 		r.Post("/budgets", h.createBudget)
 		r.Get("/budgets", h.listBudgets)

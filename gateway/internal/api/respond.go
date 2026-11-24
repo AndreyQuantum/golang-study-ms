@@ -49,7 +49,13 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, op string, err er
 	}
 }
 
+// decodeJSON читает тело с единственным JSON-объектом.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	return decodeJSONValue(w, r, dst, "JSON object")
+}
+
+// decodeJSONValue читает ровно одно JSON-значение (what - его название в тексте ошибки: "JSON object", "JSON array").
+func decodeJSONValue(w http.ResponseWriter, r *http.Request, dst any, what string) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -61,7 +67,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain a single JSON object")
+		return fmt.Errorf("request body must contain a single %s", what)
 	}
 	return nil
 }

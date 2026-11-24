@@ -21,6 +21,8 @@ type Service interface {
 	AddTransaction(ctx context.Context, tx domain.Transaction) (domain.Transaction, error)
 	ListTransactions(ctx context.Context) ([]domain.Transaction, error)
 	GetReportSummary(ctx context.Context, from, to time.Time) (domain.ReportSummary, error)
+	// ImportTransactions добавляет пакет транзакций пулом из workers горутин; см. import.go.
+	ImportTransactions(ctx context.Context, txs []domain.Transaction, workers int) (domain.ImportSummary, error)
 }
 
 type service struct {

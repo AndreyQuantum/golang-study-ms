@@ -21,6 +21,14 @@ type (
 	ValidationError = domain.ValidationError
 	ReportSummary   = domain.ReportSummary
 	CategoryTotal   = domain.CategoryTotal
+	ImportSummary   = domain.ImportSummary
+	ImportError     = domain.ImportError
+)
+
+const (
+	DefaultImportWorkers = domain.DefaultImportWorkers
+	MaxImportWorkers     = domain.MaxImportWorkers
+	MaxImportItems       = domain.MaxImportItems
 )
 
 var ErrBudgetExceeded = domain.ErrBudgetExceeded
