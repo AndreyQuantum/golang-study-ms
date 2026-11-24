@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.exe
+*.test
+**/*.out
+**/cover.html
+docker-compose.yml
+README.md
+**/README.md
+scripts

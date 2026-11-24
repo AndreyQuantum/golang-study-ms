@@ -10,7 +10,7 @@
 Через docker compose из корня репозитория:
 
 ```sh
-docker compose up -d
+docker compose up -d db redis
 ```
 
 или двумя командами `docker run`:
@@ -19,6 +19,8 @@ docker compose up -d
 docker run -d --name cashapp-postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=cashapp -p 5432:5432 postgres:17-alpine
 docker run -d --name cashapp-redis -p 6379:6379 redis:7-alpine
 ```
+
+Образ демо-программы собирается из корня репозитория: `docker build -f ledger/Dockerfile -t cashapp-ledger .` (подробности - в разделе [Docker](../README.md#docker) корневого README).
 
 ## Миграции
 
@@ -214,7 +216,7 @@ go test ./... -cover
 БД-пакеты берут advisory-блокировку на весь прогон (`internal/testdb`) и идут по очереди; Redis в `app` заменён `miniredis`:
 
 ```sh
-docker compose exec postgres createdb -U postgres cashapp_test
+docker compose exec db createdb -U postgres cashapp_test
 goose -dir migrations postgres "postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" up
 LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" go test ./internal/repository/pg ./internal/app -v
 ```
