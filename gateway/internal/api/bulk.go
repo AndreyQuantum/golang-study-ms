@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,8 +105,27 @@ func (h *Handler) bulkImport(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.svc.ImportTransactions(r.Context(), valid, workers)
 	if err != nil {
+		if isInterrupted(r, err) {
+			// таймаут или отмена: код тот же, что у остальных endpoint, но тело несёт частичную сводку
+			log.Printf("bulk import: %v", err)
+			writeJSON(w, http.StatusGatewayTimeout, BulkImportTimeoutResponse{
+				Error:              "request timeout",
+				BulkImportResponse: buildBulkResponse(convErrs, summary, origIdx),
+			})
+			return
+		}
 		writeServiceError(w, r, "bulk import", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, buildBulkResponse(convErrs, summary, origIdx))
+}
+
+// isInterrupted: импорт прерван дедлайном или отменой (в том числе когда ошибка драйвера не оборачивает ctx.Err(),
+// но контекст запроса уже закончился). Ошибки предметной области приоритетнее, как в writeServiceError.
+func isInterrupted(r *http.Request, err error) bool {
+	var ve *ledger.ValidationError
+	if errors.Is(err, ledger.ErrBudgetExceeded) || errors.As(err, &ve) {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || r.Context().Err() != nil
 }

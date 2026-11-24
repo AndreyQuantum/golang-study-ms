@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,4 +199,94 @@ func TestBulkInternalItemErrorHidden(t *testing.T) {
 	assert.JSONEq(t, `{"accepted":0,"rejected":1,"errors":[{"index":0,"error":"internal error"}]}`, rec.Body.String())
 	assert.NotContains(t, rec.Body.String(), "secret")
 	assert.Contains(t, buf.String(), "pq: secret")
+}
+
+func TestBulkTimeoutReturnsPartialSummary(t *testing.T) {
+	for name, cause := range map[string]error{"deadline": context.DeadlineExceeded, "canceled": context.Canceled} {
+		t.Run(name, func(t *testing.T) {
+			captureLog(t)
+			svc := &fakeService{
+				importSummary: ledger.ImportSummary{Accepted: 2, Rejected: 1,
+					Errors: []ledger.ImportError{{Index: 1, Err: ledger.ErrBudgetExceeded}}},
+				err: fmt.Errorf("import interrupted: %w", cause),
+			}
+			rec := do(t, svc, http.MethodPost, bulkPath, bulkBody(item("1", "еда", "2026-10-01")))
+			requireJSON(t, rec, http.StatusGatewayTimeout)
+			assert.JSONEq(t, `{"error":"request timeout","accepted":2,"rejected":1,"errors":[{"index":1,"error":"budget exceeded"}]}`, rec.Body.String())
+		})
+	}
+}
+
+func TestBulkTimeoutKeepsConversionRejections(t *testing.T) {
+	captureLog(t)
+	svc := &fakeService{
+		importSummary: ledger.ImportSummary{Accepted: 1},
+		err:           context.DeadlineExceeded,
+	}
+	rec := do(t, svc, http.MethodPost, bulkPath, bulkBody(item("1", "еда", "bad"), item("1", "еда", "2026-10-01")))
+	requireJSON(t, rec, http.StatusGatewayTimeout)
+	assert.JSONEq(t, `{"error":"request timeout","accepted":1,"rejected":1,"errors":[{"index":0,"error":"date must be in YYYY-MM-DD format"}]}`, rec.Body.String())
+}
+
+// blockingImport - ledger.Service, чей ImportTransactions ждёт отмены ctx и возвращает ctx-ошибку.
+type blockingImport struct{ ledger.Service }
+
+func (blockingImport) ImportTransactions(ctx context.Context, _ []ledger.Transaction, _ int) (ledger.ImportSummary, error) {
+	<-ctx.Done()
+	return ledger.ImportSummary{Errors: []ledger.ImportError{}}, fmt.Errorf("import interrupted: %w", ctx.Err())
+}
+
+func TestBulkTimeoutWithRealRouterTimeout(t *testing.T) {
+	captureLog(t)
+	req := httptest.NewRequest(http.MethodPost, bulkPath, strings.NewReader(bulkBody(item("1", "еда", "2026-10-01"))))
+	rec := httptest.NewRecorder()
+	NewRouter(blockingImport{newService(t)}, WithTimeout(50*time.Millisecond)).ServeHTTP(rec, req)
+	requireJSON(t, rec, http.StatusGatewayTimeout)
+	var resp BulkImportTimeoutResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "request timeout", resp.Error)
+	assert.NotNil(t, resp.Errors)
+}
+
+func TestBulkExpiredRequestContextMapsTo504(t *testing.T) {
+	captureLog(t)
+	svc := &fakeService{err: errors.New("conn closed")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, bulkPath, strings.NewReader(`[]`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	NewRouter(svc).ServeHTTP(rec, req)
+	requireJSON(t, rec, http.StatusGatewayTimeout)
+	assert.Contains(t, rec.Body.String(), `"error":"request timeout"`)
+	assert.Contains(t, rec.Body.String(), `"errors":[]`)
+}
+
+func TestBulkServiceErrorsUseCommonMapper(t *testing.T) {
+	captureLog(t)
+	svc := &fakeService{err: &ledger.ValidationError{Field: "workers", Message: "rejected by service"}}
+	rec := do(t, svc, http.MethodPost, bulkPath, `[]`)
+	requireJSON(t, rec, http.StatusBadRequest)
+	assert.JSONEq(t, `{"error":"rejected by service"}`, rec.Body.String())
+
+	svc = &fakeService{err: errors.New("db down")}
+	rec = do(t, svc, http.MethodPost, bulkPath, `[]`)
+	requireJSON(t, rec, http.StatusInternalServerError)
+	assert.JSONEq(t, `{"error":"internal server error"}`, rec.Body.String())
+}
+
+func TestBulkRequestContextHasDeadline(t *testing.T) {
+	svc := &fakeService{}
+	requireJSON(t, do(t, svc, http.MethodPost, bulkPath, `[]`), http.StatusOK)
+	deadline, ok := svc.lastCtx().Deadline()
+	require.True(t, ok)
+	assert.LessOrEqual(t, time.Until(deadline), DefaultRequestTimeout)
+}
+
+func TestBulkRouteMethods(t *testing.T) {
+	rec := do(t, &fakeService{}, http.MethodGet, bulkPath, "")
+	requireJSON(t, rec, http.StatusMethodNotAllowed)
+	assert.JSONEq(t, `{"error":"method not allowed"}`, rec.Body.String())
+
+	rec = do(t, &fakeService{}, http.MethodPost, "/api/transactions", bulkBody(item("1", "еда", "2026-10-01")))
+	requireErrorBody(t, rec, http.StatusBadRequest)
 }
