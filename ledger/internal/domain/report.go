@@ -1,4 +1,4 @@
-package entity
+package domain
 
 type CategoryTotal struct {
 	Category string  `json:"category"`

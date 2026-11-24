@@ -19,20 +19,21 @@ func main() {
 	defer stop()
 
 	initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
-	if err := ledger.Init(initCtx); err != nil {
+	svc, closeFn, err := ledger.New(initCtx)
+	if err != nil {
 		cancelInit()
 		log.Fatalf("init ledger: %v\ncheck that PostgreSQL and Redis are running, DATABASE_URL / DB_* / REDIS_* are correct and migrations are applied (goose up)", err)
 	}
 	cancelInit()
 	defer func() {
-		if err := ledger.Close(); err != nil {
+		if err := closeFn(); err != nil {
 			log.Printf("close ledger: %v", err)
 		}
 	}()
 
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           api.NewRouter(),
+		Handler:           api.NewRouter(svc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -46,7 +47,7 @@ func main() {
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server: %v", err)
-			if cerr := ledger.Close(); cerr != nil {
+			if cerr := closeFn(); cerr != nil {
 				log.Printf("close ledger: %v", cerr)
 			}
 			os.Exit(1)

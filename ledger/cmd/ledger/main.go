@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/AndreyQuantum/golang-study-ms/ledger"
-	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
 func main() {
@@ -25,35 +25,36 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := ledger.Init(ctx); err != nil {
+	svc, closeFn, err := ledger.New(ctx)
+	if err != nil {
 		log.Fatalf("init ledger: %v\ncheck that PostgreSQL and Redis are running, DATABASE_URL / DB_* / REDIS_* are correct and migrations are applied (goose up)", err)
 	}
-	if err := run(*seed, *demo); err != nil {
+	if err := run(ctx, svc, *seed, *demo); err != nil {
 		log.Printf("%v", err)
-		if cerr := ledger.Close(); cerr != nil {
+		if cerr := closeFn(); cerr != nil {
 			log.Printf("close ledger: %v", cerr)
 		}
 		os.Exit(1)
 	}
-	if err := ledger.Close(); err != nil {
+	if err := closeFn(); err != nil {
 		log.Printf("close ledger: %v", err)
 	}
 }
 
-func run(seed string, demo bool) error {
+func run(ctx context.Context, svc ledger.Service, seed string, demo bool) error {
 	if seed != "" {
-		if err := seedBudgets(seed); err != nil {
+		if err := seedBudgets(ctx, svc, seed); err != nil {
 			return fmt.Errorf("seed budgets: %w", err)
 		}
 	}
 
 	if demo {
-		runDemo()
+		runDemo(ctx, svc)
 	}
 
-	printBudgets()
-	printTransactions()
-	printReport()
+	printBudgets(ctx, svc)
+	printTransactions(ctx, svc)
+	printReport(ctx, svc)
 	return nil
 }
 
@@ -79,19 +80,19 @@ func demoCheckValid() {
 	fmt.Println()
 }
 
-func seedBudgets(path string) error {
+func seedBudgets(ctx context.Context, svc ledger.Service, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open budgets file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	budgets, err := repository.ParseBudgets(f)
+	budgets, err := domain.ParseBudgets(f)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
 	for _, b := range budgets {
-		if err := ledger.SetBudget(b); err != nil {
+		if err := svc.SetBudget(ctx, b); err != nil {
 			return fmt.Errorf("set budget %q: %w", b.Category, err)
 		}
 	}
@@ -99,7 +100,7 @@ func seedBudgets(path string) error {
 	return nil
 }
 
-func runDemo() {
+func runDemo(ctx context.Context, svc ledger.Service) {
 	now := time.Now().UTC()
 	day := func(d int) time.Time {
 		return time.Date(now.Year(), now.Month(), d, 0, 0, 0, 0, time.UTC)
@@ -115,12 +116,12 @@ func runDemo() {
 	}
 	for _, s := range steps {
 		fmt.Printf("\n== Демо: %s\n", s.title)
-		addTransaction(s.tx)
+		addTransaction(ctx, svc, s.tx)
 	}
 }
 
-func addTransaction(tx ledger.Transaction) {
-	_, err := ledger.AddTransaction(tx)
+func addTransaction(ctx context.Context, svc ledger.Service, tx ledger.Transaction) {
+	_, err := svc.AddTransaction(ctx, tx)
 	var ve *ledger.ValidationError
 	switch {
 	case err == nil:
@@ -134,8 +135,8 @@ func addTransaction(tx ledger.Transaction) {
 	}
 }
 
-func printBudgets() {
-	budgets, err := ledger.ListBudgets()
+func printBudgets(ctx context.Context, svc ledger.Service) {
+	budgets, err := svc.ListBudgets(ctx)
 	if err != nil {
 		log.Printf("list budgets: %v", err)
 		return
@@ -146,8 +147,8 @@ func printBudgets() {
 	}
 }
 
-func printTransactions() {
-	txs, err := ledger.ListTransactions()
+func printTransactions(ctx context.Context, svc ledger.Service) {
+	txs, err := svc.ListTransactions(ctx)
 	if err != nil {
 		log.Printf("list transactions: %v", err)
 		return
@@ -159,7 +160,7 @@ func printTransactions() {
 	}
 }
 
-func printReport() {
+func printReport(ctx context.Context, svc ledger.Service) {
 	now := time.Now().UTC()
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	to := from.AddDate(0, 1, -1)
@@ -167,7 +168,7 @@ func printReport() {
 	fmt.Printf("\nОтчет за %s - %s (запрашиваем дважды, смотрите cache miss / cache hit в логе):\n",
 		from.Format("2006-01-02"), to.Format("2006-01-02"))
 	for range 2 {
-		report, err := ledger.GetReportSummary(context.Background(), from, to)
+		report, err := svc.GetReportSummary(ctx, from, to)
 		if err != nil {
 			log.Printf("report summary: %v", err)
 			return

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,13 +16,12 @@ import (
 
 const jsonCT = "application/json; charset=utf-8"
 
-func resetLedger(t *testing.T) {
+func newService(t *testing.T) ledger.Service {
 	t.Helper()
-	ledger.Reset()
-	t.Cleanup(ledger.Reset)
+	return ledger.NewInMemory()
 }
 
-func do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
+func do(t *testing.T, svc ledger.Service, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	var req *http.Request
 	if body == "" {
@@ -30,7 +30,7 @@ func do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 		req = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
 	rec := httptest.NewRecorder()
-	NewRouter().ServeHTTP(rec, req)
+	NewRouter(svc).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -49,9 +49,9 @@ func requireErrorBody(t *testing.T, rec *httptest.ResponseRecorder, status int) 
 	return e
 }
 
-func mustTransactions(t *testing.T) []ledger.Transaction {
+func mustTransactions(t *testing.T, svc ledger.Service) []ledger.Transaction {
 	t.Helper()
-	got, err := ledger.ListTransactions()
+	got, err := svc.ListTransactions(context.Background())
 	require.NoError(t, err)
 	return got
 }
