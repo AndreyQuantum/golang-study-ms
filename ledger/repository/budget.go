@@ -8,21 +8,21 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
 type BudgetRepository struct {
 	mu      sync.RWMutex
-	budgets map[string]entity.Budget
+	budgets map[string]domain.Budget
 }
 
 func NewBudgetRepository() *BudgetRepository {
 	return &BudgetRepository{
-		budgets: map[string]entity.Budget{},
+		budgets: map[string]domain.Budget{},
 	}
 }
 
-func (r *BudgetRepository) SetBudget(b entity.Budget) error {
+func (r *BudgetRepository) SetBudget(b domain.Budget) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
@@ -32,28 +32,28 @@ func (r *BudgetRepository) SetBudget(b entity.Budget) error {
 	return nil
 }
 
-func (r *BudgetRepository) GetBudget(category string) (entity.Budget, bool) {
+func (r *BudgetRepository) GetBudget(category string) (domain.Budget, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	b, ok := r.budgets[category]
 	return b, ok
 }
 
-func (r *BudgetRepository) ListBudgets() []entity.Budget {
+func (r *BudgetRepository) ListBudgets() []domain.Budget {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	result := make([]entity.Budget, 0, len(r.budgets))
+	result := make([]domain.Budget, 0, len(r.budgets))
 	for _, category := range slices.Sorted(maps.Keys(r.budgets)) {
 		result = append(result, r.budgets[category])
 	}
 	return result
 }
 
-func ParseBudgets(rd io.Reader) ([]entity.Budget, error) {
+func ParseBudgets(rd io.Reader) ([]domain.Budget, error) {
 	dec := json.NewDecoder(rd)
 	dec.DisallowUnknownFields()
 
-	var budgets []entity.Budget
+	var budgets []domain.Budget
 	if err := dec.Decode(&budgets); err != nil {
 		return nil, fmt.Errorf("parse budgets json: %w", err)
 	}

@@ -8,20 +8,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/cache"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/db"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/postgres"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
 )
 
 type (
-	Transaction     = entity.Transaction
-	Budget          = entity.Budget
-	Validatable     = entity.Validatable
-	ValidationError = entity.ValidationError
-	ReportSummary   = entity.ReportSummary
-	CategoryTotal   = entity.CategoryTotal
+	Transaction     = domain.Transaction
+	Budget          = domain.Budget
+	Validatable     = domain.Validatable
+	ValidationError = domain.ValidationError
+	ReportSummary   = domain.ReportSummary
+	CategoryTotal   = domain.CategoryTotal
 )
 
 var ErrBudgetExceeded = repository.ErrBudgetExceeded
@@ -134,7 +134,7 @@ func GetReportSummary(ctx context.Context, from, to time.Time) (ReportSummary, e
 }
 
 func CheckValid(v Validatable) error {
-	return entity.CheckValid(v)
+	return domain.CheckValid(v)
 }
 
 func Reset() {

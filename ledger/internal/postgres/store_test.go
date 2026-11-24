@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/db"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
 )
 
@@ -38,12 +38,12 @@ func TestSetBudgetUpsert(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: "food", Limit: 5000}))
-	require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: "food", Limit: 7000.5}))
+	require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: "food", Limit: 5000}))
+	require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: "food", Limit: 7000.5}))
 
 	got, err := s.ListBudgets(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []entity.Budget{{Category: "food", Limit: 7000.5}}, got)
+	assert.Equal(t, []domain.Budget{{Category: "food", Limit: 7000.5}}, got)
 }
 
 func TestListBudgetsSortedAndEmpty(t *testing.T) {
@@ -56,7 +56,7 @@ func TestListBudgetsSortedAndEmpty(t *testing.T) {
 	assert.Empty(t, got)
 
 	for _, c := range []string{"transport", "food", "health"} {
-		require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: c, Limit: 10}))
+		require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: c, Limit: 10}))
 	}
 	got, err = s.ListBudgets(ctx)
 	require.NoError(t, err)
@@ -67,13 +67,13 @@ func TestListBudgetsSortedAndEmpty(t *testing.T) {
 func TestAddTransactionWithinAndExceedingLimit(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: "food", Limit: 5000}))
+	require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: "food", Limit: 5000}))
 
-	first, err := s.AddTransaction(ctx, entity.Transaction{Amount: 3000, Category: "food", Description: "a", Date: day(10, 1)})
+	first, err := s.AddTransaction(ctx, domain.Transaction{Amount: 3000, Category: "food", Description: "a", Date: day(10, 1)})
 	require.NoError(t, err)
 	assert.Equal(t, 1, first.ID)
 
-	_, err = s.AddTransaction(ctx, entity.Transaction{Amount: 2000.01, Category: "food", Date: day(10, 2)})
+	_, err = s.AddTransaction(ctx, domain.Transaction{Amount: 2000.01, Category: "food", Date: day(10, 2)})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, repository.ErrBudgetExceeded)
 
@@ -81,22 +81,22 @@ func TestAddTransactionWithinAndExceedingLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, list, 1)
 
-	exact, err := s.AddTransaction(ctx, entity.Transaction{Amount: 2000, Category: "food", Date: day(10, 2)})
+	exact, err := s.AddTransaction(ctx, domain.Transaction{Amount: 2000, Category: "food", Date: day(10, 2)})
 	require.NoError(t, err)
 	assert.Equal(t, 2, exact.ID)
 
-	_, err = s.AddTransaction(ctx, entity.Transaction{Amount: 0.01, Category: "food", Date: day(10, 3)})
+	_, err = s.AddTransaction(ctx, domain.Transaction{Amount: 0.01, Category: "food", Date: day(10, 3)})
 	assert.ErrorIs(t, err, repository.ErrBudgetExceeded)
 }
 
 func TestAddTransactionFloatNoise(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: "food", Limit: 0.3}))
+	require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: "food", Limit: 0.3}))
 
-	_, err := s.AddTransaction(ctx, entity.Transaction{Amount: 0.1, Category: "food", Date: day(10, 1)})
+	_, err := s.AddTransaction(ctx, domain.Transaction{Amount: 0.1, Category: "food", Date: day(10, 1)})
 	require.NoError(t, err)
-	_, err = s.AddTransaction(ctx, entity.Transaction{Amount: 0.2, Category: "food", Date: day(10, 1)})
+	_, err = s.AddTransaction(ctx, domain.Transaction{Amount: 0.2, Category: "food", Date: day(10, 1)})
 	assert.NoError(t, err)
 }
 
@@ -104,7 +104,7 @@ func TestAddTransactionWithoutBudget(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 
-	saved, err := s.AddTransaction(ctx, entity.Transaction{Amount: 1e6, Category: "health", Date: day(10, 1)})
+	saved, err := s.AddTransaction(ctx, domain.Transaction{Amount: 1e6, Category: "health", Date: day(10, 1)})
 	require.NoError(t, err)
 	assert.Equal(t, 1, saved.ID)
 }
@@ -113,7 +113,7 @@ func TestListTransactionsOrder(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 
-	for _, tx := range []entity.Transaction{
+	for _, tx := range []domain.Transaction{
 		{Amount: 1, Category: "a", Description: "first", Date: day(10, 1)},
 		{Amount: 2, Category: "a", Date: day(10, 3)},
 		{Amount: 3, Category: "b", Description: "third", Date: day(10, 3)},
@@ -138,7 +138,7 @@ func TestReportSummaryInterval(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 
-	for _, tx := range []entity.Transaction{
+	for _, tx := range []domain.Transaction{
 		{Amount: 100.10, Category: "food", Date: day(10, 1)},
 		{Amount: 50.20, Category: "food", Date: day(10, 10)},
 		{Amount: 30, Category: "transport", Date: day(10, 5)},
@@ -151,11 +151,11 @@ func TestReportSummaryInterval(t *testing.T) {
 
 	got, err := s.ReportSummary(ctx, day(10, 1), day(10, 10))
 	require.NoError(t, err)
-	assert.Equal(t, entity.ReportSummary{
+	assert.Equal(t, domain.ReportSummary{
 		From:  "2026-10-01",
 		To:    "2026-10-10",
 		Total: 180.30,
-		Categories: []entity.CategoryTotal{
+		Categories: []domain.CategoryTotal{
 			{Category: "food", Total: 150.30},
 			{Category: "transport", Total: 30},
 		},
@@ -174,7 +174,7 @@ func TestReportSummaryEmpty(t *testing.T) {
 func TestAddTransactionConcurrentRespectsLimit(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
-	require.NoError(t, s.SetBudget(ctx, entity.Budget{Category: "food", Limit: 100}))
+	require.NoError(t, s.SetBudget(ctx, domain.Budget{Category: "food", Limit: 100}))
 
 	const workers = 10
 	var wg sync.WaitGroup
@@ -183,7 +183,7 @@ func TestAddTransactionConcurrentRespectsLimit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := s.AddTransaction(ctx, entity.Transaction{Amount: 30, Category: "food", Date: day(10, 1)})
+			_, err := s.AddTransaction(ctx, domain.Transaction{Amount: 30, Category: "food", Date: day(10, 1)})
 			errs <- err
 		}()
 	}

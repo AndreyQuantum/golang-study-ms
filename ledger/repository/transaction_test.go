@@ -6,19 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
 var testDate = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
-func tx(category string, amount float64) entity.Transaction {
-	return entity.Transaction{Category: category, Amount: amount, Date: testDate}
+func tx(category string, amount float64) domain.Transaction {
+	return domain.Transaction{Category: category, Amount: amount, Date: testDate}
 }
 
 func newRepoWithBudget(t *testing.T, category string, limit float64) (*TransactionRepository, *BudgetRepository) {
 	t.Helper()
 	budgets := NewBudgetRepository()
-	if err := budgets.SetBudget(entity.Budget{Category: category, Limit: limit}); err != nil {
+	if err := budgets.SetBudget(domain.Budget{Category: category, Limit: limit}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
 	return NewTransactionRepository(budgets), budgets
@@ -90,7 +90,7 @@ func TestAddTransaction_AfterLimitIncrease(t *testing.T) {
 		t.Fatalf("err = %v, want ErrBudgetExceeded", err)
 	}
 
-	if err := budgets.SetBudget(entity.Budget{Category: "food", Limit: 6000}); err != nil {
+	if err := budgets.SetBudget(domain.Budget{Category: "food", Limit: 6000}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
 	if _, err := repo.AddTransaction(big); err != nil {
@@ -119,13 +119,13 @@ func TestAddTransaction_AssignsSequentialIDs(t *testing.T) {
 func TestAddTransaction_InvalidIsNotSaved(t *testing.T) {
 	tests := []struct {
 		name string
-		tx   entity.Transaction
+		tx   domain.Transaction
 		want string
 	}{
-		{"zero amount", entity.Transaction{Category: "food", Date: testDate}, "amount must be positive"},
+		{"zero amount", domain.Transaction{Category: "food", Date: testDate}, "amount must be positive"},
 		{"negative amount", tx("food", -10), "amount must be positive"},
 		{"empty category", tx("  ", 10), "category must not be empty"},
-		{"zero date", entity.Transaction{Category: "food", Amount: 10}, "date must be set"},
+		{"zero date", domain.Transaction{Category: "food", Amount: 10}, "date must be set"},
 	}
 
 	for _, tt := range tests {
@@ -133,7 +133,7 @@ func TestAddTransaction_InvalidIsNotSaved(t *testing.T) {
 			repo, _ := newRepoWithBudget(t, "food", 5000)
 			_, err := repo.AddTransaction(tt.tx)
 
-			var ve *entity.ValidationError
+			var ve *domain.ValidationError
 			if !errors.As(err, &ve) {
 				t.Fatalf("err = %v, want *ValidationError", err)
 			}

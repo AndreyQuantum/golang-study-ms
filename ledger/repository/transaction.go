@@ -7,34 +7,34 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
 var ErrBudgetExceeded = errors.New("budget exceeded")
 
 type TransactionRepository struct {
 	mu           sync.RWMutex
-	transactions []entity.Transaction
+	transactions []domain.Transaction
 	budgets      *BudgetRepository
 }
 
 func NewTransactionRepository(budgets *BudgetRepository) *TransactionRepository {
 	return &TransactionRepository{
-		transactions: []entity.Transaction{},
+		transactions: []domain.Transaction{},
 		budgets:      budgets,
 	}
 }
 
-func (r *TransactionRepository) AddTransaction(t entity.Transaction) (entity.Transaction, error) {
+func (r *TransactionRepository) AddTransaction(t domain.Transaction) (domain.Transaction, error) {
 	if err := t.Validate(); err != nil {
-		return entity.Transaction{}, err
+		return domain.Transaction{}, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if b, ok := r.budgets.GetBudget(t.Category); ok {
 		spent := r.totalByCategory(t.Category)
 		if exceeds(spent+t.Amount, b.Limit) {
-			return entity.Transaction{}, fmt.Errorf("%w: category %q, limit %.2f, spent %.2f, new %.2f",
+			return domain.Transaction{}, fmt.Errorf("%w: category %q, limit %.2f, spent %.2f, new %.2f",
 				ErrBudgetExceeded, t.Category, b.Limit, spent, t.Amount)
 		}
 	}
@@ -44,7 +44,7 @@ func (r *TransactionRepository) AddTransaction(t entity.Transaction) (entity.Tra
 	return t, nil
 }
 
-func (r *TransactionRepository) ListTransactions() []entity.Transaction {
+func (r *TransactionRepository) ListTransactions() []domain.Transaction {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.transactions)

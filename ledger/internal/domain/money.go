@@ -1,4 +1,4 @@
-package entity
+package domain
 
 const (
 	MinMoney = 0.01

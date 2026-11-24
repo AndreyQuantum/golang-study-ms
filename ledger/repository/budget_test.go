@@ -6,20 +6,20 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 )
 
 func TestSetBudget_AddsAndUpdates(t *testing.T) {
 	r := NewBudgetRepository()
 
-	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 5000}); err != nil {
+	if err := r.SetBudget(domain.Budget{Category: "food", Limit: 5000}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
 	if b, ok := r.GetBudget("food"); !ok || b.Limit != 5000 {
 		t.Fatalf("after add: got %+v, ok=%v; want limit 5000", b, ok)
 	}
 
-	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 7000}); err != nil {
+	if err := r.SetBudget(domain.Budget{Category: "food", Limit: 7000}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
 	if b, ok := r.GetBudget("food"); !ok || b.Limit != 7000 {
@@ -38,7 +38,7 @@ func TestLoadBudgets_Valid(t *testing.T) {
 		t.Fatalf("LoadBudgets: %v", err)
 	}
 
-	want := []entity.Budget{
+	want := []domain.Budget{
 		{Category: "food", Limit: 5000},
 		{Category: "transport", Limit: 3000},
 	}
@@ -92,7 +92,7 @@ func TestLoadBudgets_ReadError(t *testing.T) {
 
 func TestLoadBudgets_InvalidDoesNotModifyStorage(t *testing.T) {
 	r := NewBudgetRepository()
-	if err := r.SetBudget(entity.Budget{Category: "food", Limit: 5000}); err != nil {
+	if err := r.SetBudget(domain.Budget{Category: "food", Limit: 5000}); err != nil {
 		t.Fatalf("SetBudget: %v", err)
 	}
 
@@ -109,12 +109,12 @@ func TestLoadBudgets_InvalidDoesNotModifyStorage(t *testing.T) {
 func TestSetBudget_InvalidIsNotSaved(t *testing.T) {
 	tests := []struct {
 		name string
-		b    entity.Budget
+		b    domain.Budget
 		want string
 	}{
-		{"zero limit", entity.Budget{Category: "food"}, "limit must be positive"},
-		{"negative limit", entity.Budget{Category: "food", Limit: -1}, "limit must be positive"},
-		{"empty category", entity.Budget{Limit: 10}, "category must not be empty"},
+		{"zero limit", domain.Budget{Category: "food"}, "limit must be positive"},
+		{"negative limit", domain.Budget{Category: "food", Limit: -1}, "limit must be positive"},
+		{"empty category", domain.Budget{Limit: 10}, "category must not be empty"},
 	}
 
 	for _, tt := range tests {
@@ -122,7 +122,7 @@ func TestSetBudget_InvalidIsNotSaved(t *testing.T) {
 			r := NewBudgetRepository()
 			err := r.SetBudget(tt.b)
 
-			var ve *entity.ValidationError
+			var ve *domain.ValidationError
 			if !errors.As(err, &ve) || err.Error() != tt.want {
 				t.Fatalf("err = %v, want ValidationError %q", err, tt.want)
 			}

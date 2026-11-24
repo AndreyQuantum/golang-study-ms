@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/AndreyQuantum/golang-study-ms/ledger/entity"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
 )
 
@@ -32,7 +32,7 @@ func dayUTC(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-func (s *Store) SetBudget(ctx context.Context, b entity.Budget) error {
+func (s *Store) SetBudget(ctx context.Context, b domain.Budget) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO budgets(category, limit_amount) VALUES($1, $2::numeric)
 		 ON CONFLICT(category) DO UPDATE SET limit_amount = EXCLUDED.limit_amount`,
@@ -43,7 +43,7 @@ func (s *Store) SetBudget(ctx context.Context, b entity.Budget) error {
 	return nil
 }
 
-func (s *Store) ListBudgets(ctx context.Context) ([]entity.Budget, error) {
+func (s *Store) ListBudgets(ctx context.Context) ([]domain.Budget, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT category, limit_amount::float8 FROM budgets ORDER BY category`)
 	if err != nil {
@@ -51,9 +51,9 @@ func (s *Store) ListBudgets(ctx context.Context) ([]entity.Budget, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := []entity.Budget{}
+	result := []domain.Budget{}
 	for rows.Next() {
-		var b entity.Budget
+		var b domain.Budget
 		if err := rows.Scan(&b.Category, &b.Limit); err != nil {
 			return nil, fmt.Errorf("scan budget: %w", err)
 		}
@@ -65,10 +65,10 @@ func (s *Store) ListBudgets(ctx context.Context) ([]entity.Budget, error) {
 	return result, nil
 }
 
-func (s *Store) AddTransaction(ctx context.Context, t entity.Transaction) (entity.Transaction, error) {
+func (s *Store) AddTransaction(ctx context.Context, t domain.Transaction) (domain.Transaction, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return entity.Transaction{}, fmt.Errorf("begin transaction: %w", err)
+		return domain.Transaction{}, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -81,7 +81,7 @@ func (s *Store) AddTransaction(ctx context.Context, t entity.Transaction) (entit
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
-		return entity.Transaction{}, fmt.Errorf("lock budget: %w", err)
+		return domain.Transaction{}, fmt.Errorf("lock budget: %w", err)
 	default:
 		var spent string
 		var exceeded bool
@@ -90,10 +90,10 @@ func (s *Store) AddTransaction(ctx context.Context, t entity.Transaction) (entit
 			 FROM expenses WHERE category = $1`,
 			t.Category, amount, limit).Scan(&spent, &exceeded)
 		if err != nil {
-			return entity.Transaction{}, fmt.Errorf("check budget: %w", err)
+			return domain.Transaction{}, fmt.Errorf("check budget: %w", err)
 		}
 		if exceeded {
-			return entity.Transaction{}, fmt.Errorf("%w: category %q, limit %s, spent %s, new %s",
+			return domain.Transaction{}, fmt.Errorf("%w: category %q, limit %s, spent %s, new %s",
 				repository.ErrBudgetExceeded, t.Category, limit, spent, amount)
 		}
 	}
@@ -107,10 +107,10 @@ func (s *Store) AddTransaction(ctx context.Context, t entity.Transaction) (entit
 		`INSERT INTO expenses(amount, category, description, date) VALUES($1::numeric, $2, $3, $4) RETURNING id`,
 		amount, t.Category, description, dayUTC(t.Date)).Scan(&id)
 	if err != nil {
-		return entity.Transaction{}, fmt.Errorf("insert expense: %w", err)
+		return domain.Transaction{}, fmt.Errorf("insert expense: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return entity.Transaction{}, fmt.Errorf("commit: %w", err)
+		return domain.Transaction{}, fmt.Errorf("commit: %w", err)
 	}
 	t.ID = id
 	t.Amount = math.Round(t.Amount*100) / 100
@@ -118,7 +118,7 @@ func (s *Store) AddTransaction(ctx context.Context, t entity.Transaction) (entit
 	return t, nil
 }
 
-func (s *Store) ListTransactions(ctx context.Context) ([]entity.Transaction, error) {
+func (s *Store) ListTransactions(ctx context.Context) ([]domain.Transaction, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, amount::float8, category, description, date FROM expenses ORDER BY date DESC, id DESC`)
 	if err != nil {
@@ -126,9 +126,9 @@ func (s *Store) ListTransactions(ctx context.Context) ([]entity.Transaction, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := []entity.Transaction{}
+	result := []domain.Transaction{}
 	for rows.Next() {
-		var t entity.Transaction
+		var t domain.Transaction
 		var description sql.NullString
 		if err := rows.Scan(&t.ID, &t.Amount, &t.Category, &description, &t.Date); err != nil {
 			return nil, fmt.Errorf("scan transaction: %w", err)
@@ -143,26 +143,26 @@ func (s *Store) ListTransactions(ctx context.Context) ([]entity.Transaction, err
 	return result, nil
 }
 
-func (s *Store) ReportSummary(ctx context.Context, from, to time.Time) (entity.ReportSummary, error) {
+func (s *Store) ReportSummary(ctx context.Context, from, to time.Time) (domain.ReportSummary, error) {
 	from, to = dayUTC(from), dayUTC(to)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT category, SUM(amount)::float8 FROM expenses WHERE date BETWEEN $1 AND $2 GROUP BY category ORDER BY category`,
 		from, to)
 	if err != nil {
-		return entity.ReportSummary{}, fmt.Errorf("report summary: %w", err)
+		return domain.ReportSummary{}, fmt.Errorf("report summary: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	report := entity.ReportSummary{
+	report := domain.ReportSummary{
 		From:       from.Format(dateLayout),
 		To:         to.Format(dateLayout),
-		Categories: []entity.CategoryTotal{},
+		Categories: []domain.CategoryTotal{},
 	}
 	var totalCents int64
 	for rows.Next() {
-		var c entity.CategoryTotal
+		var c domain.CategoryTotal
 		if err := rows.Scan(&c.Category, &c.Total); err != nil {
-			return entity.ReportSummary{}, fmt.Errorf("scan report row: %w", err)
+			return domain.ReportSummary{}, fmt.Errorf("scan report row: %w", err)
 		}
 		cents := int64(math.Round(c.Total * 100))
 		c.Total = float64(cents) / 100
@@ -170,7 +170,7 @@ func (s *Store) ReportSummary(ctx context.Context, from, to time.Time) (entity.R
 		report.Categories = append(report.Categories, c)
 	}
 	if err := rows.Err(); err != nil {
-		return entity.ReportSummary{}, fmt.Errorf("report summary: %w", err)
+		return domain.ReportSummary{}, fmt.Errorf("report summary: %w", err)
 	}
 	report.Total = float64(totalCents) / 100
 	return report, nil
