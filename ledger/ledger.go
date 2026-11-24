@@ -8,14 +8,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/app"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/cache"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/db"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/domain"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/postgres"
+	"github.com/AndreyQuantum/golang-study-ms/ledger/internal/service"
 	"github.com/AndreyQuantum/golang-study-ms/ledger/repository"
 )
 
 type (
+	Service         = service.Service
 	Transaction     = domain.Transaction
 	Budget          = domain.Budget
 	Validatable     = domain.Validatable
@@ -141,4 +144,15 @@ func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
 	store = newMemoryStore()
+}
+
+// New подключается к PostgreSQL и Redis (настройки из окружения) и возвращает сервис
+// и функцию закрытия соединений. Миграции не запускаются.
+func New(ctx context.Context) (Service, func() error, error) {
+	return app.New(ctx)
+}
+
+// NewInMemory возвращает сервис на репозиториях в памяти: для тестов и демо без БД.
+func NewInMemory() Service {
+	return app.NewInMemory()
 }
