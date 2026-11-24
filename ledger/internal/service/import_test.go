@@ -388,3 +388,44 @@ func TestImportNoGoroutineLeak(t *testing.T) {
 		})
 	}
 }
+
+func TestImportConcurrentRespectsLimit(t *testing.T) {
+	for range 20 {
+		svc := newService()
+		ctx := context.Background()
+		require.NoError(t, svc.SetBudget(ctx, domain.Budget{Category: "food", Limit: 100}))
+		summary, err := svc.ImportTransactions(ctx, importTxs(20, "food", 10), 8)
+		require.NoError(t, err)
+		assert.Equal(t, 10, summary.Accepted)
+		assert.Equal(t, 10, summary.Rejected)
+		for _, e := range summary.Errors {
+			assert.ErrorIs(t, e, domain.ErrBudgetExceeded)
+		}
+		stored, err := svc.ListTransactions(ctx)
+		require.NoError(t, err)
+		var sum float64
+		for _, s := range stored {
+			sum += s.Amount
+		}
+		assert.Equal(t, 100.0, sum)
+	}
+}
+
+func TestImportMixedCategories(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+	require.NoError(t, svc.SetBudget(ctx, domain.Budget{Category: "food", Limit: 50}))
+	require.NoError(t, svc.SetBudget(ctx, domain.Budget{Category: "taxi", Limit: 30}))
+	var txs []domain.Transaction
+	txs = append(txs, importTxs(10, "food", 10)...)  // принято 5
+	txs = append(txs, importTxs(10, "taxi", 10)...)  // принято 3
+	txs = append(txs, importTxs(10, "games", 10)...) // без лимита, принято 10
+	summary, err := svc.ImportTransactions(ctx, txs, 32)
+	require.NoError(t, err)
+	assert.Equal(t, 18, summary.Accepted)
+	assert.Equal(t, 12, summary.Rejected)
+	for _, e := range summary.Errors {
+		assert.ErrorIs(t, e, domain.ErrBudgetExceeded)
+		assert.Less(t, e.Index, 20, "категория games лимита не имеет")
+	}
+}

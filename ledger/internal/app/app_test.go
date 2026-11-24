@@ -275,3 +275,49 @@ func TestReportSurvivesRedisFailure(t *testing.T) {
 	assert.Equal(t, first, got)
 	assert.Contains(t, buf.String(), "falling back to database")
 }
+
+func TestImportRespectsLimitOverPg(t *testing.T) {
+	pool, _ := integrationEnv(t)
+	captureLog(t)
+	svc, closeFn, err := New(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	ctx := context.Background()
+	require.NoError(t, svc.SetBudget(ctx, domain.Budget{Category: "food", Limit: 100}))
+
+	txs := make([]domain.Transaction, 20)
+	for i := range txs {
+		txs[i] = domain.Transaction{Amount: 10, Category: "food", Date: testDate}
+	}
+	summary, err := svc.ImportTransactions(ctx, txs, 8)
+	require.NoError(t, err)
+	assert.Equal(t, 10, summary.Accepted)
+	assert.Equal(t, 10, summary.Rejected)
+	for _, e := range summary.Errors {
+		assert.True(t, errors.Is(e, domain.ErrBudgetExceeded), "неожиданная ошибка: %v", e)
+	}
+
+	var sum float64
+	require.NoError(t, pool.QueryRow(`SELECT COALESCE(SUM(amount), 0)::float8 FROM expenses`).Scan(&sum))
+	assert.Equal(t, 100.0, sum)
+}
+
+func TestImportCanceledContextOverPg(t *testing.T) {
+	pool, _ := integrationEnv(t)
+	captureLog(t)
+	svc, closeFn, err := New(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	txs := []domain.Transaction{{Amount: 10, Category: "food", Date: testDate}}
+	summary, err := svc.ImportTransactions(ctx, txs, 4)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, summary.Accepted+summary.Rejected)
+
+	var n int
+	require.NoError(t, pool.QueryRow(`SELECT COUNT(*) FROM expenses`).Scan(&n))
+	assert.Zero(t, n)
+}

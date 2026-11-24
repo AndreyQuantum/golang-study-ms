@@ -167,3 +167,30 @@ func TestPublicCheckValid(t *testing.T) {
 	assert.NoError(t, ledger.CheckValid(ledger.Budget{Category: "a", Limit: 1}))
 	assert.Error(t, ledger.CheckValid(ledger.Budget{Category: "a", Limit: 0}))
 }
+
+func TestServiceImport(t *testing.T) {
+	ctx := context.Background()
+	svc := ledger.NewInMemory()
+	require.NoError(t, svc.SetBudget(ctx, ledger.Budget{Category: "еда", Limit: 25}))
+
+	txs := make([]ledger.Transaction, 5)
+	for i := range txs {
+		txs[i] = ledger.Transaction{Amount: 10, Category: "еда", Date: svcDate}
+	}
+	var summary ledger.ImportSummary
+	summary, err := svc.ImportTransactions(ctx, txs, ledger.DefaultImportWorkers)
+	require.NoError(t, err)
+	assert.Equal(t, 5, summary.Accepted+summary.Rejected)
+	assert.Equal(t, 2, summary.Accepted)
+	for _, e := range summary.Errors {
+		var ie ledger.ImportError = e
+		assert.True(t, errors.Is(ie, ledger.ErrBudgetExceeded))
+	}
+	assert.Len(t, svcTransactions(t, svc), 2)
+
+	_, err = svc.ImportTransactions(ctx, txs, ledger.MaxImportWorkers+1)
+	var ve *ledger.ValidationError
+	assert.True(t, errors.As(err, &ve))
+	_, err = svc.ImportTransactions(ctx, make([]ledger.Transaction, ledger.MaxImportItems+1), 1)
+	assert.True(t, errors.As(err, &ve))
+}
