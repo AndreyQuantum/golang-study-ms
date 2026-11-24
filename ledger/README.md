@@ -101,8 +101,8 @@ gateway ──> ledger (публичный пакет: алиасы типов, 
 
 Каталог `internal` закрыт для других модулей, а `gateway` - отдельный модуль (`replace => ../ledger`), поэтому он не может импортировать
 `ledger/internal/...`. Корневой пакет `ledger` выводит наружу всё нужное алиасами типов: `ledger.Service = service.Service`,
-`ledger.Transaction = domain.Transaction`, `ledger.Budget`, `ledger.ReportSummary`, `ledger.CategoryTotal`, `ledger.ValidationError`
-и `ledger.ErrBudgetExceeded`. Алиас - это тот же самый тип, поэтому `errors.Is` и `errors.As` работают в gateway. Направление зависимостей
+`ledger.Transaction = domain.Transaction`, `ledger.Budget`, `ledger.ReportSummary`, `ledger.CategoryTotal`, `ledger.ValidationError`,
+`ledger.ImportSummary`, `ledger.ImportError` и `ledger.ErrBudgetExceeded` (плюс константы лимитов импорта). Алиас - это тот же самый тип, поэтому `errors.Is` и `errors.As` работают в gateway. Направление зависимостей
 проверяют arch-тесты `ledger/arch_test.go` и `gateway/arch_test.go`.
 
 ## Публичный API
@@ -114,7 +114,12 @@ type Service interface {
     AddTransaction(ctx context.Context, tx Transaction) (Transaction, error)
     ListTransactions(ctx context.Context) ([]Transaction, error)
     GetReportSummary(ctx context.Context, from, to time.Time) (ReportSummary, error)
+    ImportTransactions(ctx context.Context, txs []Transaction, workers int) (ImportSummary, error)
 }
+
+type ImportSummary struct { Accepted, Rejected int; Errors []ImportError } // Errors не nil, по возрастанию Index
+type ImportError struct { Index int; Err error }                          // Unwrap: errors.Is(ErrBudgetExceeded), errors.As(*ValidationError)
+const DefaultImportWorkers, MaxImportWorkers, MaxImportItems = 4, 32, 1000
 
 func New(ctx context.Context) (Service, func() error, error) // PostgreSQL + Redis
 func NewInMemory() Service                                     // репозитории в памяти, без кеша
@@ -147,6 +152,26 @@ var ErrBudgetExceeded error
 и `SELECT ... FOR UPDATE` по строке бюджета, в `memory` - общий mutex на всё время вызова. Если бюджета у категории нет, блокировки и лимита нет.
 Порядок "блокировка, сумма, вставка" закреплён spy-тестом сервиса, отсутствие перерасхода при гонке проверяет интеграционный тест в `internal/app`.
 Деньги сравниваются в целых центах (`domain.Money`), поэтому `0.1 + 0.2` укладывается в лимит `0.3`.
+
+### Пакетный импорт
+
+`ImportTransactions(ctx, txs, workers)` добавляет пакет транзакций пулом воркеров (`internal/service/import.go`). `workers` от 1 до 32 и не больше 1000 элементов,
+иначе `*ValidationError` (поля `workers` и `transactions`), хранилище при этом не трогается. Пустой пакет - пустая сводка без ошибки.
+
+Конвейер:
+
+1. Продюсер-горутина кладёт `{index, tx}` в канал `jobs` и закрывает его; отправка идёт через `select` с `ctx.Done()`, поэтому после отмены он не зависает.
+2. `workers` воркеров читают `jobs` (`for job := range jobs`), перед каждым элементом проверяют `ctx.Done()` и вызывают тот же `AddTransaction`: валидация, правило бюджета
+   и вставка в одной `WithinTx` (в pg под `SELECT ... FOR UPDATE`, в memory под mutex). Копии правила для импорта нет, поэтому параллельные воркеры не превышают лимит.
+   Результат `{index, err}` уходит в канал `results`.
+3. Закрывающая горутина делает `wg.Wait()` и `close(results)`.
+4. Отдельная горутина-коллектор читает `results` до закрытия. Счётчики принятых и отклонённых - `atomic.Int64` (везде атомики, без mutex), срез ошибок трогает только коллектор.
+   Вызывающая горутина ждёт коллектор и продюсера, затем сортирует ошибки по `Index`.
+
+К возврату из метода не остаётся ни одной горутины. Отказ одного элемента (валидация, `ErrBudgetExceeded`, ошибка хранилища) попадает в `Errors` и не останавливает остальных,
+пакет целиком не откатывается. Если `ctx` отменён или истёк до обработки всех элементов, возвращаются частичная сводка и ошибка, оборачивающая `ctx.Err()`
+(`errors.Is(err, context.DeadlineExceeded)` работает). Необработанные и прерванные отменой элементы не входят ни в `Accepted`, ни в `Rejected`; элемент, успевший закоммититься, считается принятым.
+Кеш отчёта импорт не сбрасывает, как и `AddTransaction`.
 
 ### Контекст и отмена
 
@@ -193,3 +218,7 @@ docker compose exec postgres createdb -U postgres cashapp_test
 goose -dir migrations postgres "postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" up
 LEDGER_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/cashapp_test?sslmode=disable" go test ./internal/repository/pg ./internal/app -v
 ```
+
+Импорт: `service/import_test.go` проверяет успешный путь, отказы, сортировку ошибок, лимит бюджета при 8 параллельных воркерах (повтор 20 раз), отмену посреди импорта
+на заглушке `TxManager`, которая блокируется до `ctx.Done()` (без `time.Sleep`), остановку продюсера и отсутствие утечек горутин; `internal/app` добавляет такой же тест на PostgreSQL.
+Под `-race` в docker: `docker run --rm -v "$PWD/..:/src" -w /src/ledger -e CGO_ENABLED=1 golang:1.27 go test -race ./...`.
