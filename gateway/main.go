@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,7 +15,28 @@ import (
 	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
+// requestTimeoutFromEnv разбирает REQUEST_TIMEOUT (длительность Go: 50ms, 2s, 1m). Пусто - значение по умолчанию.
+// Неверное или неположительное значение - ошибка: опечатка не должна молча давать другой таймаут.
+func requestTimeoutFromEnv(raw string) (time.Duration, error) {
+	if raw == "" {
+		return api.DefaultRequestTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("REQUEST_TIMEOUT=%q: %w (ожидается длительность вроде 500ms или 2s)", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("REQUEST_TIMEOUT=%q: таймаут должен быть больше нуля", raw)
+	}
+	return d, nil
+}
+
 func main() {
+	requestTimeout, err := requestTimeoutFromEnv(os.Getenv("REQUEST_TIMEOUT"))
+	if err != nil {
+		log.Fatalf("invalid config: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -33,12 +55,13 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           api.NewRouter(svc),
+		Handler:           api.NewRouter(svc, api.WithTimeout(requestTimeout)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
+		log.Printf("request timeout: %s", requestTimeout)
 		log.Printf("gateway listening on %s", srv.Addr)
 		errCh <- srv.ListenAndServe()
 	}()
