@@ -20,7 +20,10 @@ fail() { echo "FAIL  $1"; S=1; }
 
 cleanup() {
   if [ "$STARTED" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
-    $DC down -v --remove-orphans >/dev/null 2>&1
+    $DC down -v --remove-orphans --rmi local >/dev/null 2>&1
+  fi
+  if [ "${KEEP:-0}" != 1 ]; then
+    docker image rm -f hw11-gateway:smoke hw11-ledger:smoke >/dev/null 2>&1
   fi
 }
 trap 'cleanup; rm -f "$TMPBODY"' EXIT
