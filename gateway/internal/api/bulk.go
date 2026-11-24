@@ -15,7 +15,11 @@ import (
 	"github.com/AndreyQuantum/golang-study-ms/ledger"
 )
 
-const workersMessage = "workers must be an integer between 1 and 32"
+// Тексты отказов собираются из лимитов ledger, чтобы не расходиться с сервисом.
+var (
+	workersMessage = fmt.Sprintf("workers must be an integer between 1 and %d", ledger.MaxImportWorkers)
+	tooManyMessage = fmt.Sprintf("too many transactions: at most %d per request", ledger.MaxImportItems)
+)
 
 var errBulkNotArray = errors.New("request body must be a JSON array of transactions")
 
@@ -84,7 +88,7 @@ func (h *Handler) bulkImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(reqs) > ledger.MaxImportItems {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many transactions: at most %d per request", ledger.MaxImportItems))
+		writeError(w, http.StatusBadRequest, tooManyMessage)
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -242,9 +243,33 @@ func (b *blockingTx) waitEntered(t *testing.T, n int) {
 	}
 }
 
-// runImport запускает импорт в горутине и ждёт результат не дольше guard.
-func runImport(t *testing.T, svc Service, ctx context.Context, txs []domain.Transaction, workers int) (domain.ImportSummary, error) {
-	t.Helper()
+// expiredCtx - контекст, дедлайн которого наступает по команде: expire закрывает Done, после чего Err() == DeadlineExceeded.
+// Нужен, чтобы проверять отмену по дедлайну без таймеров и sleep.
+type expiredCtx struct {
+	context.Context
+	done chan struct{}
+}
+
+func newExpiredCtx() (*expiredCtx, func()) {
+	c := &expiredCtx{Context: context.Background(), done: make(chan struct{})}
+	var once sync.Once
+	return c, func() { once.Do(func() { close(c.done) }) }
+}
+
+func (c *expiredCtx) Done() <-chan struct{} { return c.done }
+
+func (c *expiredCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// startImport запускает импорт в горутине и возвращает функцию ожидания результата (не дольше guard).
+// wait вызывается только из горутины теста, поэтому t.Fatal в ней допустим.
+func startImport(svc Service, ctx context.Context, txs []domain.Transaction, workers int) func(t *testing.T) (domain.ImportSummary, error) {
 	type res struct {
 		s   domain.ImportSummary
 		err error
@@ -254,12 +279,15 @@ func runImport(t *testing.T, svc Service, ctx context.Context, txs []domain.Tran
 		s, err := svc.ImportTransactions(ctx, txs, workers)
 		ch <- res{s, err}
 	}()
-	select {
-	case r := <-ch:
-		return r.s, r.err
-	case <-time.After(guard):
-		t.Fatal("ImportTransactions не вернулся после отмены")
-		return domain.ImportSummary{}, nil
+	return func(t *testing.T) (domain.ImportSummary, error) {
+		t.Helper()
+		select {
+		case r := <-ch:
+			return r.s, r.err
+		case <-time.After(guard):
+			t.Fatal("ImportTransactions не вернулся после отмены")
+			return domain.ImportSummary{}, nil
+		}
 	}
 }
 
@@ -268,32 +296,23 @@ func TestImportCancelMidImport(t *testing.T) {
 		name   string
 		cause  error
 		newCtx func() (context.Context, func())
-		wait   bool // ждать ли сигналов entered перед cancel
 	}{
 		{"canceled", context.Canceled, func() (context.Context, func()) {
 			return context.WithCancel(context.Background())
-		}, true},
+		}},
 		{"deadline", context.DeadlineExceeded, func() (context.Context, func()) {
-			return context.WithTimeout(context.Background(), 20*time.Millisecond)
-		}, false},
+			return newExpiredCtx()
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			bt := newBlockingTx(0)
-			ctx, cancel := tc.newCtx()
-			defer cancel()
-			done := make(chan struct{})
-			var summary domain.ImportSummary
-			var err error
-			go func() {
-				defer close(done)
-				summary, err = runImport(t, bt.service(), ctx, importTxs(10, "food", 1), 2)
-			}()
-			if tc.wait {
-				bt.waitEntered(t, 2)
-				cancel()
-			}
-			<-done
+			ctx, stop := tc.newCtx()
+			defer stop()
+			wait := startImport(bt.service(), ctx, importTxs(10, "food", 1), 2)
+			bt.waitEntered(t, 2)
+			stop()
+			summary, err := wait(t)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tc.cause)
 			assert.Zero(t, summary.Accepted+summary.Rejected, "прерванные элементы не считаются")
@@ -307,16 +326,10 @@ func TestImportCancelPartialSummary(t *testing.T) {
 	bt := newBlockingTx(3)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan struct{})
-	var summary domain.ImportSummary
-	var err error
-	go func() {
-		defer close(done)
-		summary, err = runImport(t, bt.service(), ctx, importTxs(10, "food", 1), 1)
-	}()
+	wait := startImport(bt.service(), ctx, importTxs(10, "food", 1), 1)
 	bt.waitEntered(t, 1) // четвёртый элемент заблокирован
 	cancel()
-	<-done
+	summary, err := wait(t)
 
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 3, summary.Accepted)
@@ -332,15 +345,10 @@ func TestImportProducerStopsOnCancel(t *testing.T) {
 	bt := newBlockingTx(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan struct{})
-	var err error
-	go func() {
-		defer close(done)
-		_, err = runImport(t, bt.service(), ctx, importTxs(1000, "food", 1), 1)
-	}()
+	wait := startImport(bt.service(), ctx, importTxs(1000, "food", 1), 1)
 	bt.waitEntered(t, 1)
 	cancel()
-	<-done
+	_, err := wait(t)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.EqualValues(t, 1, bt.calls.Load())
 }
