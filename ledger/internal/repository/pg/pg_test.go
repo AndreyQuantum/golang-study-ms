@@ -167,3 +167,59 @@ func TestReportQueriesExpiredContext(t *testing.T) {
 	_, err = s.Repos().Expenses.SumByCategoryBetween(ctx, "food", day(10, 1), day(10, 31))
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
+
+// TestReportQueriesCancelMidQuery проверяет боевую конфигурацию пула (db.Open): когда ctx истекает,
+// пока запрос ждёт лок, клиент получает DeadlineExceeded, а запрос прерывается и на стороне PostgreSQL
+// (pgx при отмене закрывает соединение и шлёт CancelRequest), а не ждёт до конца блокирующей транзакции.
+func TestReportQueriesCancelMidQuery(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+
+	blocker, err := pool.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Close() }()
+	var blockerPID int
+	require.NoError(t, blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID))
+	_, err = blocker.ExecContext(ctx, `BEGIN`)
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, `LOCK TABLE expenses IN ACCESS EXCLUSIVE MODE`)
+	require.NoError(t, err)
+	defer func() { _, _ = blocker.ExecContext(context.Background(), `ROLLBACK`) }()
+
+	activeExpenseQueries := func() int {
+		var n int
+		require.NoError(t, pool.QueryRowContext(ctx,
+			`SELECT count(*) FROM pg_stat_activity
+			 WHERE state = 'active' AND query ILIKE '%FROM expenses%' AND pid <> pg_backend_pid() AND pid <> $1`,
+			blockerPID).Scan(&n))
+		return n
+	}
+
+	calls := map[string]func(ctx context.Context) error{
+		"Categories": func(ctx context.Context) error {
+			_, err := s.Repos().Expenses.Categories(ctx, day(10, 1), day(10, 31))
+			return err
+		},
+		"SumByCategoryBetween": func(ctx context.Context) error {
+			_, err := s.Repos().Expenses.SumByCategoryBetween(ctx, "food", day(10, 1), day(10, 31))
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			err := call(callCtx)
+			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			assert.Less(t, time.Since(start), 3*time.Second, "вызов должен вернуться вскоре после дедлайна")
+
+			// лок всё ещё держится: если запрос не оборван на стороне сервера, он останется active
+			deadline := time.Now().Add(5 * time.Second)
+			for activeExpenseQueries() > 0 && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Millisecond)
+			}
+			assert.Zero(t, activeExpenseQueries(), "запрос к expenses продолжает выполняться на сервере")
+		})
+	}
+}

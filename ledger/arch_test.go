@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -122,4 +125,40 @@ func TestDependencyDirection(t *testing.T) {
 			}
 		}
 	})
+}
+
+// contextFreeDBCall находит вызовы database/sql без ctx. Допустимы только ...Context-варианты.
+// Query() без аргументов - это url.URL.Query, а не database/sql.
+var contextFreeDBCall = regexp.MustCompile(`\.(Query|QueryRow|Exec|Prepare)\([^)]|\.(Begin|Ping)\(`)
+
+func TestContextFreeCallDetector(t *testing.T) {
+	bad := []string{"pool.Exec(`TRUNCATE x`)", "tx.Query(q)", "db.QueryRow(q)", "db.Begin()", "db.Prepare(q)", "db.Ping()"}
+	for _, src := range bad {
+		require.True(t, contextFreeDBCall.MatchString(src), src)
+	}
+	good := []string{"pool.ExecContext(ctx, q)", "q.QueryContext(ctx, q)", "q.QueryRowContext(ctx, q)", "db.BeginTx(ctx, nil)", "db.PingContext(ctx)", "u.Query()"}
+	for _, src := range good {
+		require.False(t, contextFreeDBCall.MatchString(src), src)
+	}
+}
+
+// TestNoNonContextDBCalls: в коде, который ходит в БД, нет вызовов без ctx. _test.go вне области проверки.
+func TestNoNonContextDBCalls(t *testing.T) {
+	for _, dir := range []string{"internal/repository/pg", "internal/db", "internal/testdb"} {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		require.NoError(t, err)
+		require.NotEmpty(t, files, dir)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			raw, err := os.ReadFile(f)
+			require.NoError(t, err)
+			for i, line := range strings.Split(string(raw), "\n") {
+				if code, _, _ := strings.Cut(line, "//"); contextFreeDBCall.MatchString(code) {
+					t.Errorf("%s:%d: вызов БД без ctx: %s", f, i+1, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
 }

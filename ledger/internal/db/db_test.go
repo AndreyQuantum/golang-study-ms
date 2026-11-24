@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,24 @@ func TestRedact(t *testing.T) {
 
 func TestOpenUnreachable(t *testing.T) {
 	_, err := Open(context.Background(), "postgres://u:secret@127.0.0.1:1/d?sslmode=disable&connect_timeout=1")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret")
+	assert.Contains(t, err.Error(), "xxxxx")
+}
+
+func TestOpenPoolSettings(t *testing.T) {
+	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("LEDGER_TEST_DATABASE_URL is not set")
+	}
+	pool, err := Open(context.Background(), dsn)
+	require.NoError(t, err)
+	defer func() { _ = pool.Close() }()
+	assert.Equal(t, 10, pool.Stats().MaxOpenConnections)
+}
+
+func TestOpenInvalidDSNHidesPassword(t *testing.T) {
+	_, err := Open(context.Background(), "postgres://u:secret@h:notaport/d")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "secret")
 	assert.Contains(t, err.Error(), "xxxxx")

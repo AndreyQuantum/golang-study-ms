@@ -240,3 +240,88 @@ func TestCachedInvalidIntervalSkipsCache(t *testing.T) {
 	assert.Zero(t, inner.reportCalls)
 	assert.NotContains(t, buf.String(), "cache miss")
 }
+
+type ctxKey struct{}
+
+// ctxCache запоминает значение-маркер из ctx каждого обращения к кешу.
+type ctxCache struct {
+	*fakeCache
+	mu    sync.Mutex
+	marks []any
+}
+
+func (c *ctxCache) mark(ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.marks = append(c.marks, ctx.Value(ctxKey{}))
+}
+
+func (c *ctxCache) GetJSON(ctx context.Context, key string, dst any) (bool, error) {
+	c.mark(ctx)
+	return c.fakeCache.GetJSON(ctx, key, dst)
+}
+
+func (c *ctxCache) SetJSON(ctx context.Context, key string, v any, ttl time.Duration) error {
+	c.mark(ctx)
+	return c.fakeCache.SetJSON(ctx, key, v, ttl)
+}
+
+// ctxService запоминает маркер из ctx, пришедшего в inner.
+type ctxService struct {
+	Service
+	mark any
+	err  error
+}
+
+func (c *ctxService) GetReportSummary(ctx context.Context, from, to time.Time) (domain.ReportSummary, error) {
+	c.mark = ctx.Value(ctxKey{})
+	if c.err != nil {
+		return domain.ReportSummary{}, c.err
+	}
+	return c.Service.GetReportSummary(ctx, from, to)
+}
+
+func TestCachedPassesContextToCacheAndInner(t *testing.T) {
+	captureLog(t)
+	cc := &ctxCache{fakeCache: newFakeCache()}
+	inner := &ctxService{Service: seeded(t)}
+	s := NewCached(inner, cc)
+	ctx := context.WithValue(context.Background(), ctxKey{}, "marker")
+
+	_, err := s.GetReportSummary(ctx, day(10, 1), day(10, 10))
+	require.NoError(t, err)
+
+	assert.Equal(t, "marker", inner.mark)
+	require.Len(t, cc.marks, 2, "GetJSON и SetJSON")
+	assert.Equal(t, []any{"marker", "marker"}, cc.marks)
+}
+
+func TestCachedReportNotCachedOnCancel(t *testing.T) {
+	captureLog(t)
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		fc := newFakeCache()
+		inner := &ctxService{Service: seeded(t), err: cause}
+		s := NewCached(inner, fc)
+
+		_, err := s.GetReportSummary(context.Background(), day(10, 1), day(10, 10))
+		require.ErrorIs(t, err, cause)
+		assert.Equal(t, 0, fc.sets, "отменённый отчёт не кешируется")
+	}
+}
+
+func TestCachedHitSkipsInner(t *testing.T) {
+	captureLog(t)
+	fc := newFakeCache()
+	inner := &countingService{Service: seeded(t)}
+	s := NewCached(inner, fc)
+	ctx := context.Background()
+
+	_, err := s.GetReportSummary(ctx, day(10, 1), day(10, 10))
+	require.NoError(t, err)
+	require.Equal(t, 1, inner.reportCalls)
+
+	// на хите даже отменённый ctx не мешает: inner не вызывается
+	_, err = s.GetReportSummary(ctx, day(10, 1), day(10, 10))
+	require.NoError(t, err)
+	assert.Equal(t, 1, inner.reportCalls)
+}

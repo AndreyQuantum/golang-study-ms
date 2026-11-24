@@ -63,7 +63,7 @@ func Open(t *testing.T) *sql.DB {
 		t.Fatalf("open test database: %v", err)
 	}
 	t.Cleanup(func() { _ = pool.Close() })
-	if _, err := pool.Exec(`TRUNCATE budgets, expenses RESTART IDENTITY`); err != nil {
+	if _, err := pool.ExecContext(context.Background(), `TRUNCATE budgets, expenses RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return pool
